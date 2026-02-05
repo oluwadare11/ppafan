@@ -102,8 +102,8 @@ const setSecureCookies = (res, accessToken, refreshToken, options = {}) => {
   }
 
   // Production: Full security with configurable domain
-  // PUMP HOUSE ERP: Use COOKIE_DOMAIN env var or default to thepumphouseng.com
-  const cookieDomain = process.env.COOKIE_DOMAIN || '.thepumphouseng.com';
+  // PPAfan: Use COOKIE_DOMAIN env var or default to .ppafan.org
+  const cookieDomain = process.env.COOKIE_DOMAIN || '.ppafan.org';
   const prodCookieOptions = {
     ...baseCookieOptions,
     secure: true, // HTTPS only
@@ -161,7 +161,7 @@ const clearAuthCookies = (res, options = {}) => {
     console.log(`DEV COOKIES CLEARED${prefix ? ` (${prefix})` : ''} (no domain specified)`);
   } else {
     // PROD: Clear with domain
-    const cookieDomain = process.env.COOKIE_DOMAIN || '.thepumphouseng.com';
+    const cookieDomain = process.env.COOKIE_DOMAIN || '.ppafan.org';
     const clearOptions = {
       domain: cookieDomain,
       path: '/'
