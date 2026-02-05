@@ -22,9 +22,6 @@ const Sidebar = lazy(() => import("./components/Sidebar"));
 const Attendance = lazy(() => import("./components/Attendance"));
 const Settings = lazy(() => import("./components/Settings"));
 
-// Kiosk Components
-const KioskLogin = lazy(() => import("./components/kiosk/KioskLogin"));
-
 // Toast notifications
 import { ToastContainer } from 'react-toastify';
 import 'react-toastify/dist/ReactToastify.css';
@@ -50,11 +47,6 @@ const preloadModules = () => {
   setTimeout(() => {
     import("./components/Settings");
   }, 100);
-
-  // Third batch - Kiosk components
-  setTimeout(() => {
-    import("./components/kiosk/KioskLogin");
-  }, 200);
 };
 
 // Trigger preload after page becomes idle
@@ -270,7 +262,6 @@ const AppRoutes = memo(() => {
             {/* Public Routes */}
             <Route path="/login" element={<Login />} />
             <Route path="/session-expired" element={<SessionExpired />} />
-            <Route path="/kiosk/login" element={<KioskLogin />} />
 
             {/* Protected Routes - NO individual Suspense, handled by outer Suspense */}
             <Route path="/" element={

@@ -1,4 +1,4 @@
-// models/Tenant.js - Simplified for single-tenant Pump House ERP
+// models/Tenant.js - Simplified for single-tenant PPAfan
 // Returns fixed business info - no actual database collection needed
 
 const mongoose = require('mongoose');
@@ -12,11 +12,11 @@ const tenantSchema = new mongoose.Schema({
   },
   businessName: {
     type: String,
-    default: process.env.SYSTEM_NAME || 'Pump House ERP'
+    default: process.env.SYSTEM_NAME || 'PPAfan'
   },
   businessType: {
     type: String,
-    default: 'Pumps & Machinery'
+    default: 'Attendance Management'
   },
   subdomain: {
     type: String,
@@ -59,8 +59,8 @@ tenantSchema.statics.getOrCreate = async function() {
   if (!tenant) {
     tenant = await this.create({
       tenantId: 'pumphouse',
-      businessName: process.env.SYSTEM_NAME || 'Pump House ERP',
-      businessType: 'Pumps & Machinery',
+      businessName: process.env.SYSTEM_NAME || 'PPAfan',
+      businessType: 'Attendance Management',
       status: 'active',
       subscription: { plan: 'enterprise', status: 'active' }
     });

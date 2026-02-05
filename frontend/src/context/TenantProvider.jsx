@@ -1,4 +1,4 @@
-// context/TenantProvider.jsx - Simplified for single-tenant Pump House ERP
+// context/TenantProvider.jsx - Simplified for single-tenant PPAfan
 import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { AuthContext } from './AuthContext.jsx';
@@ -140,8 +140,8 @@ export const TenantProvider = ({ children }) => {
           console.warn("Failed to fetch tenant info:", err.message);
           // Set fallback info
           setTenantInfo({
-            businessName: 'Pump House ERP',
-            businessType: 'Pumps & Machinery',
+            businessName: 'PPAfan',
+            businessType: 'Attendance Management',
             branding: {
               primaryColor: '#2563EB',
               secondaryColor: '#10B981',

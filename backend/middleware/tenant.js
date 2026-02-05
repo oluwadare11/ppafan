@@ -1,4 +1,4 @@
-// middleware/tenant.js - Simplified for single-tenant Pump House ERP
+// middleware/tenant.js - Simplified for single-tenant PPAfan
 // No multi-tenancy - just provides model access helpers
 
 const logger = require('../utils/logger');
@@ -18,8 +18,8 @@ const identifyTenant = async (req, res, next) => {
     // Set tenant context with full document data
     req.tenant = {
       tenantId: tenantDoc.tenantId || 'pumphouse',
-      businessName: tenantDoc.businessName || process.env.SYSTEM_NAME || 'Pump House ERP',
-      businessType: tenantDoc.businessType || 'Pumps & Machinery',
+      businessName: tenantDoc.businessName || process.env.SYSTEM_NAME || 'PPAfan',
+      businessType: tenantDoc.businessType || 'Attendance Management',
       status: tenantDoc.status || 'active',
       subscription: tenantDoc.subscription || { plan: 'enterprise', status: 'active' },
       // CRITICAL: Include contactInfo and settings for email notifications
@@ -36,7 +36,7 @@ const identifyTenant = async (req, res, next) => {
     // Fallback to minimal tenant object
     req.tenant = {
       tenantId: 'pumphouse',
-      businessName: process.env.SYSTEM_NAME || 'Pump House ERP',
+      businessName: process.env.SYSTEM_NAME || 'PPAfan',
       status: 'active',
       subscription: { plan: 'enterprise', status: 'active' }
     };
