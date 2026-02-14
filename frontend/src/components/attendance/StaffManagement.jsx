@@ -8,11 +8,7 @@ import {
   Building, Users as UsersIcon, Eye, EyeOff, Key, Upload, RefreshCw
 } from 'lucide-react';
 
-const StaffManagement = ({
-  // Optional props for integration with Attendance parent (if needed)
-  uploadEmployeeData,
-  syncBiometricData
-}) => {
+const StaffManagement = () => {
   const { makeRequest } = useTenant();
 
   // State
@@ -439,31 +435,6 @@ const StaffManagement = ({
           <p className="text-gray-600 text-sm mt-1">Manage employees, kiosk access, and positions</p>
         </div>
 
-        {/* Device Sync Buttons (if provided) */}
-        {(uploadEmployeeData || syncBiometricData) && (
-          <div className="flex flex-wrap gap-2">
-            {uploadEmployeeData && (
-              <button
-                onClick={uploadEmployeeData}
-                className="px-3 py-2 bg-blue-600 text-white text-sm rounded-lg hover:bg-blue-700 flex items-center gap-2"
-                disabled={loading}
-              >
-                <Upload className="w-4 h-4" />
-                <span className="hidden sm:inline">Upload to</span> Device
-              </button>
-            )}
-            {syncBiometricData && (
-              <button
-                onClick={syncBiometricData}
-                className="px-3 py-2 bg-green-600 text-white text-sm rounded-lg hover:bg-green-700 flex items-center gap-2"
-                disabled={loading}
-              >
-                <RefreshCw className="w-4 h-4" />
-                Sync Biometric
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Messages */}

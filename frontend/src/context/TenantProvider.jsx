@@ -86,26 +86,31 @@ export const TenantProvider = ({ children }) => {
     if (!response.ok) {
       // Handle authentication failure
       if (response.status === 401) {
-        // Check if we're in a kiosk route
         const isKioskRoute = window.location.pathname.startsWith('/kiosk/');
         const loginPath = isKioskRoute ? '/kiosk/login' : '/login';
+        const currentPath = window.location.pathname;
+        const PUBLIC_ROUTES = ['/login', '/kiosk/login', '/session-expired', '/verify-email', '/forgot-password', '/register'];
+        const isPublicRoute = PUBLIC_ROUTES.some(route => currentPath === route || currentPath.endsWith(route));
 
-        console.log('[TenantProvider] Authentication expired - redirecting to', loginPath);
+        // Only redirect if not already on a public route
+        if (!isPublicRoute) {
+          console.log('[TenantProvider] Authentication expired - hard redirect to', loginPath);
 
-        if (logout) {
-          await logout(true);
-        } else {
-          localStorage.removeItem('user');
-          sessionStorage.clear();
-
-          // Clear kiosk-specific storage if in kiosk route
-          if (isKioskRoute) {
-            localStorage.removeItem('kioskUser');
-            localStorage.removeItem('kioskAuthToken');
+          if (logout) {
+            await logout(true);
+          } else {
+            localStorage.removeItem('user');
+            sessionStorage.clear();
+            if (isKioskRoute) {
+              localStorage.removeItem('kioskUser');
+              localStorage.removeItem('kioskAuthToken');
+            }
           }
+
+          // CRITICAL: Use hard redirect to prevent flash loops from competing React Router + window.location navigations
+          window.location.href = loginPath;
         }
 
-        navigate(loginPath, { replace: true });
         throw new Error('Authentication expired. Please log in again.');
       }
 

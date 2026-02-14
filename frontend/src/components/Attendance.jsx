@@ -1265,43 +1265,6 @@ function Attendance() {
     doc.save(`attendance-report-${reportMode === 'day' ? filterDate : reportMode}.pdf`);
   }, [attendanceRecords, getStaffName, getStaffPosition, reportMode, filterDate]);
 
-  // FIXED: Upload and sync functions using tenant-aware API
-  const uploadEmployeeData = useCallback(async () => {
-    try {
-      setActionLoading(true);
-      await makeRequest('/api/staff/upload', {
-        method: 'POST',
-        body: JSON.stringify({})
-      });
-      setSuccess('Employee data uploaded to device successfully!');
-      setTimeout(() => setSuccess(''), 3000);
-      setError('');
-    } catch (err) {
-      console.error('Failed to upload employee data:', err);
-      setError('Failed to upload employee data: ' + (err.message || 'Unknown error'));
-    } finally {
-      setActionLoading(false);
-    }
-  }, [makeRequest]);
-
-  const syncBiometricData = useCallback(async () => {
-    try {
-      setActionLoading(true);
-      await makeRequest('/api/staff/sync-biometric', {
-        method: 'POST',
-        body: JSON.stringify({})
-      });
-      setSuccess('Biometric data synced successfully!');
-      setTimeout(() => setSuccess(''), 3000);
-      setError('');
-    } catch (err) {
-      console.error('Failed to sync biometric data:', err);
-      setError('Failed to sync biometric data: ' + (err.message || 'Unknown error'));
-    } finally {
-      setActionLoading(false);
-    }
-  }, [makeRequest]);
-
   // Show initial loading only briefly for authentication check
   if (initialLoading) {
     return (
@@ -1455,8 +1418,6 @@ function Attendance() {
             handleEditStaff={handleEditStaff}
             handleDeleteStaff={handleDeleteStaff}
             generateEmployeeId={generateEmployeeId}
-            uploadEmployeeData={uploadEmployeeData}
-            syncBiometricData={syncBiometricData}
             loading={actionLoading}
           />
         )}

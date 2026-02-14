@@ -274,12 +274,17 @@ const getLogo = async (tenant) => {
       if (tenantLogo.startsWith('data:image/')) {
         const matches = tenantLogo.match(/^data:image\/([a-z]+);base64,(.+)$/i);
         if (matches) {
-          // Check if base64 data is large enough (> 200 chars means more than a tiny placeholder)
-          if (matches[2].length > 200) {
-            console.log('Using base64 tenant logo');
-            return { data: matches[2], type: matches[1] };
-          } else {
-            console.log('Base64 logo too small, treating as placeholder');
+          try {
+            // Decode and check actual byte size (should be at least 500 bytes for a valid logo)
+            const decodedBuffer = Buffer.from(matches[2], 'base64');
+            if (decodedBuffer.length >= 500) {
+              console.log(`Using base64 tenant logo (${decodedBuffer.length} bytes)`);
+              return { data: matches[2], type: matches[1] };
+            } else {
+              console.log(`Base64 logo too small (${decodedBuffer.length} bytes), treating as placeholder`);
+            }
+          } catch (decodeErr) {
+            console.log('Failed to decode base64 logo:', decodeErr.message);
           }
         }
       }

@@ -144,6 +144,9 @@ const AuthProvider = ({ children }) => {
   // CRITICAL: Redirect lock to prevent infinite auth loops
   const isRedirectingRef = useRef(false);
 
+  // CRITICAL: Session expired flag - blocks ALL further API calls once set
+  const sessionExpiredRef = useRef(false);
+
   // CRITICAL: Logout lock to prevent multiple simultaneous logout attempts
   const loggingOutRef = useRef(false);
 
@@ -322,8 +325,68 @@ const AuthProvider = ({ children }) => {
     return null;
   }, [user, isDevelopment, getTenantSubdomain]);
 
+  // Helper: Clear all auth state and redirect to login immediately
+  const forceRedirectToLogin = useCallback(() => {
+    if (sessionExpiredRef.current) return; // Already handling
+    sessionExpiredRef.current = true;
+    isRedirectingRef.current = true;
+
+    console.warn('[Auth] Session expired - clearing all state and redirecting to login');
+
+    // Clear React state synchronously
+    setUser(null);
+    setCsrfToken(null);
+    setError(null);
+
+    // Clear all client storage
+    try {
+      localStorage.removeItem('user');
+      localStorage.removeItem('accessToken');
+      localStorage.removeItem('refreshToken');
+      localStorage.removeItem('kioskUser');
+      localStorage.removeItem('authState');
+      const keysToRemove = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.includes('token') || key.includes('auth') || key.includes('user') || key.includes('session'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+    } catch (e) { /* ignore */ }
+
+    try { sessionStorage.clear(); } catch (e) { /* ignore */ }
+
+    // Clear readable cookies (HTTP-only ones will be cleared by the server on /logout)
+    try {
+      document.cookie.split(';').forEach(cookie => {
+        const name = cookie.split('=')[0].trim();
+        if (name) {
+          document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+          document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/api/auth;`;
+        }
+      });
+    } catch (e) { /* ignore */ }
+
+    // Fire-and-forget backend logout to clear HTTP-only cookies
+    try {
+      const logoutUrl = `${getApiUrl()}/api/auth/logout`;
+      fetch(logoutUrl, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+    } catch (e) { /* ignore */ }
+
+    // Hard redirect to login - NOTHING should stop this
+    window.location.href = '/login';
+  }, [getApiUrl]);
+
   // CRITICAL FIX: Enhanced request function with proper credentials handling
   const makeRequest = useCallback(async (url, options = {}) => {
+    // CRITICAL: If session has expired, block ALL further API calls
+    if (sessionExpiredRef.current) {
+      const error = new Error('Session expired');
+      error.response = { status: 401, data: { error: 'SESSION_EXPIRED' } };
+      throw error;
+    }
+
     const fullUrl = url.startsWith('http') ? url : `${getApiUrl()}${url}`;
     const skipAutoRedirect = options.skipAutoRedirect || false;
     const isFormData = options.body instanceof FormData;
@@ -381,8 +444,8 @@ const AuthProvider = ({ children }) => {
           throw error;
         }
 
-        // CRITICAL: Prevent multiple simultaneous redirects (causes infinite loop)
-        if (isRedirectingRef.current) {
+        // CRITICAL: If already redirecting or session already expired, just throw
+        if (isRedirectingRef.current || sessionExpiredRef.current) {
           const error = new Error('Session expired');
           error.response = { status: 401, data: { error: 'SESSION_EXPIRED' } };
           throw error;
@@ -394,14 +457,9 @@ const AuthProvider = ({ children }) => {
         const isPublicRoute = PUBLIC_ROUTES.some(route => currentPath === route || currentPath.endsWith(route));
 
         if (!isPublicRoute) {
-          // Set redirect lock BEFORE any async operations
-          isRedirectingRef.current = true;
-          console.warn('Session expired - redirecting to session-expired page');
-
-          // CRITICAL: Use hard redirect to session-expired page
-          // This page will clear ALL auth state and redirect to login
-          // Hard redirect ensures React state is completely reset
-          window.location.href = '/session-expired';
+          // CRITICAL: Go directly to login - no intermediate page
+          // This prevents the flash loop caused by /session-expired triggering re-verification
+          forceRedirectToLogin();
 
           // Throw to stop further execution
           const error = new Error('Session expired. Redirecting...');
@@ -512,6 +570,9 @@ const AuthProvider = ({ children }) => {
   // Token refresh with proper JSON body
   const scheduleTokenRefresh = useCallback(() => {
     const refreshTimer = setTimeout(async () => {
+      // Don't attempt refresh if session already expired
+      if (sessionExpiredRef.current) return;
+
       try {
         await makeRequest('/api/auth/refresh', {
           method: 'POST',
@@ -523,21 +584,19 @@ const AuthProvider = ({ children }) => {
         console.error('Auto token refresh failed:', error);
         // Only handle session expiry if it's not a rate limit error
         if (!error.message.includes('429') && !error.message.includes('Rate limited')) {
-          // Check if we should redirect to session-expired
           const currentPath = window.location.pathname;
           const PUBLIC_ROUTES = ['/login', '/kiosk/login', '/session-expired', '/verify-email', '/forgot-password', '/register'];
           const isPublicRoute = PUBLIC_ROUTES.some(route => currentPath === route || currentPath.endsWith(route));
 
-          if (!isPublicRoute && !isRedirectingRef.current) {
-            isRedirectingRef.current = true;
-            window.location.href = '/session-expired';
+          if (!isPublicRoute && !isRedirectingRef.current && !sessionExpiredRef.current) {
+            forceRedirectToLogin();
           }
         }
       }
     }, 13 * 60 * 1000); // 13 minutes
 
     return () => clearTimeout(refreshTimer);
-  }, [makeRequest]);
+  }, [makeRequest, forceRedirectToLogin]);
 
   // FIXED: Single initialization without redirect loops
   useEffect(() => {
@@ -559,7 +618,7 @@ const AuthProvider = ({ children }) => {
       // ✅ PERFORMANCE FIX: Skip auth verify on public routes
       // This saves an unnecessary API call on login page
       const currentPath = window.location.pathname;
-      const PUBLIC_ROUTES = ['/login', '/kiosk/login', '/verify-email', '/forgot-password', '/register'];
+      const PUBLIC_ROUTES = ['/login', '/kiosk/login', '/session-expired', '/verify-email', '/forgot-password', '/register'];
       const isPublicRoute = PUBLIC_ROUTES.some(route => currentPath === route || currentPath.endsWith(route));
 
       if (isPublicRoute) {
@@ -636,7 +695,10 @@ const AuthProvider = ({ children }) => {
         return { user, requirePasswordChange: true };
       }
       
-      // Normal login flow
+      // Normal login flow - reset session expired flags
+      sessionExpiredRef.current = false;
+      isRedirectingRef.current = false;
+
       setUser(user);
       if (newCsrfToken) {
         setCsrfToken(newCsrfToken);
