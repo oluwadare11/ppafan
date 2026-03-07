@@ -1,7 +1,7 @@
 // Sidebar.jsx - PPAfan Attendance System Navigation
 import { NavLink, useNavigate } from 'react-router-dom';
 import {
-  Clock, LogOut, Settings, X, ChevronRight
+  Clock, LogOut, Settings, X, ChevronRight, Calculator
 } from 'lucide-react';
 import { useContext, useEffect, useState } from 'react';
 import { AuthContext } from '../context/AuthContext.jsx';
@@ -22,6 +22,7 @@ function Sidebar({ isOpen = true, onClose = () => {} }) {
     const moduleMap = {
       '/': () => import('./Attendance'),
       '/attendance': () => import('./Attendance'),
+      '/payroll': () => import('./Payroll'),
       '/settings': () => import('./Settings'),
     };
     if (moduleMap[route]) {
@@ -29,9 +30,10 @@ function Sidebar({ isOpen = true, onClose = () => {} }) {
     }
   };
 
-  // PPAfan navigation items - Attendance only
+  // PPAfan navigation items
   const allNavItems = [
     { to: '/', label: 'Attendance', icon: Clock, permissionKey: 'attendance' },
+    { to: '/payroll', label: 'Payroll', icon: Calculator, permissionKey: 'payroll' },
   ];
 
   // Filter nav items based on user permissions

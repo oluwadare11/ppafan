@@ -2,18 +2,43 @@
 const mongoose = require('mongoose');
 
 const shiftSchema = new mongoose.Schema({
-  staffId: { 
-    type: mongoose.Schema.Types.ObjectId, 
+  // 'permanent' = weekly recurring; 'temporary' = date-range override (takes priority)
+  shiftType: {
+    type: String,
+    enum: ['permanent', 'temporary'],
+    default: 'permanent',
+    index: true
+  },
+
+  staffId: {
+    type: mongoose.Schema.Types.ObjectId,
     required: true,
     ref: 'Staff'
   },
-  dayOfWeek: { 
-    type: String, 
-    required: true,
-    enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+  // Stored on temp shifts for fast date-range queries without a Staff join
+  employeeId: {
+    type: String,
+    index: true
   },
-  resumptionTime: { 
-    type: String, 
+
+  // Permanent shift field — required when shiftType='permanent'
+  dayOfWeek: {
+    type: String,
+    enum: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday', null],
+    default: null
+  },
+
+  // Temporary shift fields — used when shiftType='temporary'
+  tempStartDate: { type: String, default: null },  // YYYY-MM-DD
+  tempEndDate:   { type: String, default: null },  // YYYY-MM-DD
+  reason:        { type: String, maxlength: 500, default: '' },
+
+  // Optional flags (both types)
+  isHalfDay:          { type: Boolean, default: false },
+  isFullDayReference: { type: Boolean, default: false },
+
+  resumptionTime: {
+    type: String,
     required: true,
     validate: {
       validator: function(v) {
@@ -22,8 +47,8 @@ const shiftSchema = new mongoose.Schema({
       message: 'Invalid time format. Use HH:mm format (e.g., 09:00)'
     }
   },
-  closingTime: { 
-    type: String, 
+  closingTime: {
+    type: String,
     required: true,
     validate: {
       validator: function(v) {
@@ -32,62 +57,82 @@ const shiftSchema = new mongoose.Schema({
       message: 'Invalid time format. Use HH:mm format (e.g., 17:00)'
     }
   },
-  breakDuration: { 
-    type: Number, 
+  breakDuration: {
+    type: Number,
     default: 60,
     min: 0,
     max: 480
   },
-  isActive: { 
-    type: Boolean, 
-    default: true 
+  isActive: {
+    type: Boolean,
+    default: true
   },
-  notes: { 
-    type: String, 
-    maxlength: 500 
-  },
-  
-  tenantId: { 
-    type: String, 
-    required: true, 
-    index: true 
-  },
-  
-  createdBy: { 
+  notes: {
     type: String,
-    required: true 
+    maxlength: 500
   },
-  updatedBy: { 
-    type: String 
+
+  tenantId: {
+    type: String,
+    required: true,
+    index: true
+  },
+
+  createdBy: {
+    type: String,
+    required: true
+  },
+  updatedBy: {
+    type: String
   }
-}, { 
-  timestamps: true 
+}, {
+  timestamps: true
 });
 
 // INDEXES
-shiftSchema.index({ tenantId: 1, staffId: 1, dayOfWeek: 1 }, { unique: true });
+// Unique only for permanent shifts (temp shifts can overlap dayOfWeek)
+shiftSchema.index(
+  { tenantId: 1, staffId: 1, dayOfWeek: 1 },
+  { unique: true, partialFilterExpression: { shiftType: { $ne: 'temporary' } } }
+);
 shiftSchema.index({ tenantId: 1, dayOfWeek: 1 });
 shiftSchema.index({ tenantId: 1, isActive: 1 });
+// Fast temp-shift lookup by employeeId + date range
+shiftSchema.index({ tenantId: 1, employeeId: 1, shiftType: 1, tempStartDate: 1, tempEndDate: 1 });
 
 // PRE-SAVE MIDDLEWARE
 shiftSchema.pre('save', function(next) {
   if (!this.tenantId) {
     return next(new Error('TenantId is required for shift records'));
   }
-  
+
+  // dayOfWeek required for permanent shifts
+  if (this.shiftType !== 'temporary' && !this.dayOfWeek) {
+    return next(new Error('dayOfWeek is required for permanent shifts'));
+  }
+
+  // Date range required for temporary shifts
+  if (this.shiftType === 'temporary' && (!this.tempStartDate || !this.tempEndDate)) {
+    return next(new Error('tempStartDate and tempEndDate are required for temporary shifts'));
+  }
+
+  if (this.shiftType === 'temporary' && this.tempStartDate > this.tempEndDate) {
+    return next(new Error('tempStartDate must be <= tempEndDate'));
+  }
+
   const [startHour, startMinute] = this.resumptionTime.split(':').map(Number);
   const [endHour, endMinute] = this.closingTime.split(':').map(Number);
   const startMinutes = startHour * 60 + startMinute;
   const endMinutes = endHour * 60 + endMinute;
-  
+
   if (startMinutes >= endMinutes) {
     return next(new Error('Resumption time must be before closing time'));
   }
-  
+
   if (!this.isNew && this.isModified() && !this.updatedBy) {
     this.updatedBy = 'system';
   }
-  
+
   next();
 });
 

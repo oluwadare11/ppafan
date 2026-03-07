@@ -63,6 +63,19 @@ const ShiftManagement = ({
   });
   const [editingTempShift, setEditingTempShift] = useState(null);
 
+  // MANUAL ENTRY STATE (self-contained)
+  const [manualForm, setManualForm] = useState({
+    employeeId: '',
+    date: '',
+    status: 'present',
+    checkIn: '',
+    checkOut: '',
+    remarks: ''
+  });
+  const [manualLoading, setManualLoading] = useState(false);
+  const [manualEntries, setManualEntries] = useState([]);
+  const [manualEntriesLoading, setManualEntriesLoading] = useState(false);
+
   // Filter for active staff only
   const activeStaff = staff?.filter(s => s.status === 'active') || [];
 
@@ -85,6 +98,60 @@ const ShiftManagement = ({
   useEffect(() => {
     fetchTempShifts();
   }, []);
+
+  // Fetch recent manual entries
+  const fetchManualEntries = async () => {
+    try {
+      setManualEntriesLoading(true);
+      const res = await axios.get(`${API_BASE_URL}/api/attendance/manual-entries/recent`, {
+        headers: getAuthHeaders()
+      });
+      setManualEntries(res.data.records || []);
+    } catch (err) {
+      console.error('Error fetching manual entries:', err);
+    } finally {
+      setManualEntriesLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchManualEntries();
+  }, []);
+
+  // Submit a manual attendance entry
+  const handleManualSubmit = async (e) => {
+    e.preventDefault();
+    if (!manualForm.employeeId || !manualForm.date || !manualForm.status) {
+      alert('Please fill all required fields');
+      return;
+    }
+    try {
+      setManualLoading(true);
+      await axios.post(`${API_BASE_URL}/api/attendance/manual`, manualForm, {
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' }
+      });
+      setManualForm({ employeeId: '', date: '', status: 'present', checkIn: '', checkOut: '', remarks: '' });
+      await fetchManualEntries();
+      alert('Manual entry submitted successfully!');
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to submit manual entry');
+    } finally {
+      setManualLoading(false);
+    }
+  };
+
+  // Delete a manual attendance entry
+  const handleDeleteManualEntry = async (id) => {
+    if (!window.confirm('Delete this manual attendance record? This cannot be undone.')) return;
+    try {
+      await axios.delete(`${API_BASE_URL}/api/attendance/${id}`, {
+        headers: getAuthHeaders()
+      });
+      setManualEntries(prev => prev.filter(e => e._id !== id));
+    } catch (err) {
+      alert(err.response?.data?.message || 'Failed to delete record');
+    }
+  };
 
   // Create temporary shift
   const handleCreateTempShift = async (e) => {
@@ -1353,19 +1420,22 @@ const ShiftManagement = ({
             <MdWork className="text-2xl" />
             Manual Attendance Entry
           </h3>
+          <p className="text-red-100 text-sm mt-1">Create or override an attendance record for any staff member</p>
         </div>
-        
-        <div className="p-6">
-          <form onSubmit={handleManualEntry} className="space-y-4">
+
+        <div className="p-6 space-y-6">
+          {/* Entry Form */}
+          <form onSubmit={handleManualSubmit} className="space-y-4">
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Employee */}
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
                   Employee <span className="text-red-500">*</span>
                   <span className="text-xs font-normal text-gray-500 ml-2">(Active only)</span>
                 </label>
                 <select
-                  value={manualEntry.employeeId}
-                  onChange={(e) => setManualEntry({ ...manualEntry, employeeId: e.target.value })}
+                  value={manualForm.employeeId}
+                  onChange={(e) => setManualForm({ ...manualForm, employeeId: e.target.value })}
                   className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
                   required
                 >
@@ -1377,52 +1447,157 @@ const ShiftManagement = ({
                   ))}
                 </select>
               </div>
+
+              {/* Status */}
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Entry Type <span className="text-red-500">*</span>
+                  Status <span className="text-red-500">*</span>
                 </label>
                 <select
-                  value={manualEntry.type}
-                  onChange={(e) => setManualEntry({ ...manualEntry, type: e.target.value })}
+                  value={manualForm.status}
+                  onChange={(e) => setManualForm({ ...manualForm, status: e.target.value })}
                   className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
                   required
                 >
-                  <option value="in">Clock In</option>
-                  <option value="out">Clock Out</option>
+                  <option value="present">Present</option>
+                  <option value="absent">Absent</option>
                 </select>
               </div>
+
+              {/* Date */}
               <div className="bg-white rounded-lg p-4 border border-gray-200">
                 <label className="block text-sm font-semibold text-gray-700 mb-2">
                   Date <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="date"
-                  value={manualEntry.date}
-                  onChange={(e) => setManualEntry({ ...manualEntry, date: e.target.value })}
+                  value={manualForm.date}
+                  onChange={(e) => setManualForm({ ...manualForm, date: e.target.value })}
                   className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
                   required
                 />
               </div>
-              <div className="bg-white rounded-lg p-4 border border-gray-200">
-                <label className="block text-sm font-semibold text-gray-700 mb-2">
-                  Time <span className="text-red-500">*</span>
-                </label>
+
+              {/* Check-in (present only) */}
+              {manualForm.status === 'present' && (
+                <div className="bg-white rounded-lg p-4 border border-gray-200">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Check-in Time
+                  </label>
+                  <input
+                    type="time"
+                    value={manualForm.checkIn}
+                    onChange={(e) => setManualForm({ ...manualForm, checkIn: e.target.value })}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  />
+                </div>
+              )}
+
+              {/* Check-out (present only) */}
+              {manualForm.status === 'present' && (
+                <div className="bg-white rounded-lg p-4 border border-gray-200">
+                  <label className="block text-sm font-semibold text-gray-700 mb-2">
+                    Check-out Time
+                  </label>
+                  <input
+                    type="time"
+                    value={manualForm.checkOut}
+                    onChange={(e) => setManualForm({ ...manualForm, checkOut: e.target.value })}
+                    className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                  />
+                </div>
+              )}
+
+              {/* Remarks */}
+              <div className="bg-white rounded-lg p-4 border border-gray-200 md:col-span-2">
+                <label className="block text-sm font-semibold text-gray-700 mb-2">Remarks</label>
                 <input
-                  type="time"
-                  value={manualEntry.time}
-                  onChange={(e) => setManualEntry({ ...manualEntry, time: e.target.value })}
+                  type="text"
+                  value={manualForm.remarks}
+                  onChange={(e) => setManualForm({ ...manualForm, remarks: e.target.value })}
+                  placeholder="Optional note about this entry"
                   className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:border-red-500"
-                  required
                 />
               </div>
             </div>
+
             <button
               type="submit"
-              className="w-full md:w-auto px-8 py-3 bg-gradient-to-r from-red-600 to-pink-600 text-white rounded-lg hover:from-red-700 hover:to-pink-700 transition-all font-semibold shadow-lg flex items-center justify-center gap-2"
+              disabled={manualLoading}
+              className="w-full md:w-auto px-8 py-3 bg-gradient-to-r from-red-600 to-pink-600 text-white rounded-lg hover:from-red-700 hover:to-pink-700 transition-all font-semibold shadow-lg flex items-center justify-center gap-2 disabled:opacity-60"
             >
-              <FaPlus /> Submit Manual Entry
+              <FaPlus /> {manualLoading ? 'Submitting...' : 'Submit Manual Entry'}
             </button>
           </form>
+
+          {/* Recent Manual Entries Panel */}
+          <div className="border-t border-red-200 pt-6">
+            <div className="flex items-center justify-between mb-4">
+              <h4 className="text-base font-semibold text-gray-800 flex items-center gap-2">
+                <FaClock className="text-red-500" /> Recent Manual Entries
+              </h4>
+              <button
+                onClick={fetchManualEntries}
+                disabled={manualEntriesLoading}
+                className="text-xs text-red-600 hover:text-red-800 font-medium underline"
+              >
+                {manualEntriesLoading ? 'Loading...' : 'Refresh'}
+              </button>
+            </div>
+
+            {manualEntriesLoading ? (
+              <p className="text-sm text-gray-400 text-center py-4">Loading...</p>
+            ) : manualEntries.length === 0 ? (
+              <p className="text-sm text-gray-400 text-center py-4">No manual entries yet.</p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="bg-red-100 text-red-800">
+                      <th className="text-left p-3 font-semibold rounded-tl-lg">Staff</th>
+                      <th className="text-left p-3 font-semibold">Date</th>
+                      <th className="text-left p-3 font-semibold">Status</th>
+                      <th className="text-left p-3 font-semibold">Check-in</th>
+                      <th className="text-left p-3 font-semibold">Check-out</th>
+                      <th className="text-left p-3 font-semibold">Note</th>
+                      <th className="text-center p-3 font-semibold rounded-tr-lg">Delete</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {manualEntries.map((entry, idx) => (
+                      <tr key={entry._id} className={idx % 2 === 0 ? 'bg-white' : 'bg-red-50'}>
+                        <td className="p-3 font-medium text-gray-800">{entry.staffName || entry.employeeId}</td>
+                        <td className="p-3 text-gray-600">{entry.date}</td>
+                        <td className="p-3">
+                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${entry.absent ? 'bg-red-100 text-red-700' : 'bg-green-100 text-green-700'}`}>
+                            {entry.absent ? 'Absent' : 'Present'}
+                          </span>
+                        </td>
+                        <td className="p-3 text-gray-600">
+                          {entry.checkIn ? new Date(entry.checkIn).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', hour12: true }) : '—'}
+                        </td>
+                        <td className="p-3 text-gray-600">
+                          {entry.checkOut ? new Date(entry.checkOut).toLocaleTimeString('en-NG', { hour: '2-digit', minute: '2-digit', hour12: true }) : '—'}
+                        </td>
+                        <td className="p-3 text-gray-500 text-xs max-w-[160px] truncate">
+                          {entry.adjustmentNote?.replace(/^Manual entry:\s*/i, '') || '—'}
+                        </td>
+                        <td className="p-3 text-center">
+                          <button
+                            onClick={() => handleDeleteManualEntry(entry._id)}
+                            className="p-1.5 bg-red-100 hover:bg-red-600 text-red-600 hover:text-white rounded-lg transition-colors"
+                            title="Delete this entry"
+                          >
+                            <FaTrash className="h-3.5 w-3.5" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

@@ -34,9 +34,11 @@ const devicesRouter = require('./routes/devices');
 const admsRouter = require('./routes/adms');
 const deviceCommandsRouter = require('./routes/deviceCommands');
 const uploadRouter = require('./routes/upload');
+const payrollRoutes = require('./routes/payroll');
 
 // Initialize cron jobs
 require('./crons/attendance-cron');
+require('./crons/payroll-cron');
 
 const app = express();
 
@@ -213,6 +215,9 @@ app.use('/api/users', requirePermission('settings'), usersRoutes);
 app.use('/api/settings', requirePermission('settings'), settingsRoutes);
 app.use('/api/dashboard', requirePermission('dashboard'), dashboardRoutes);
 app.use('/api/upload', uploadRouter);
+
+// Payroll routes
+app.use('/api/payroll', requirePermission('payroll'), payrollRoutes);
 
 // Attendance routes
 app.use('/api/attendance', requirePermission('attendance'), attendanceRoutes);

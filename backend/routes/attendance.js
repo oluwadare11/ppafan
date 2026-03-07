@@ -91,15 +91,21 @@ const formatMinutesToHoursAndMinutes = (totalMinutes) => {
   }
 };
 
-// FIXED: Holiday/Leave Detection - Shift is source of truth for working days
+// Holiday/Leave Detection - Shift is source of truth for working days
 // This function checks if there's a holiday or approved leave that would override working
 const isHolidayOrLeaveForStaff = async (date, employeeId, req) => {
-  // FIXED: Use Lagos timezone for date string
   const dateStr = getLagosDateString(date);
   const TenantAttendance = req.getTenantModel('Attendance');
   const TenantLeaveRequest = req.getTenantModel('LeaveRequest');
+  const TenantHoliday = req.getTenantModel('Holiday');
 
-  // Check for manual holiday
+  // Check new Holiday model first
+  if (TenantHoliday) {
+    const holiday = await TenantHoliday.findOne({ tenantId: req.tenantId, date: dateStr });
+    if (holiday) return { isNonWorking: true, reason: 'Holiday' };
+  }
+
+  // Legacy: check Attendance-based holiday records (backward compat)
   if (TenantAttendance) {
     const holiday = await TenantAttendance.findOne({
       employeeId: 'HOLIDAY',
@@ -129,21 +135,41 @@ const isHolidayOrLeaveForStaff = async (date, employeeId, req) => {
   return { isNonWorking: false, reason: null };
 };
 
-// Check if staff has a shift for the given day (SHIFT IS SOURCE OF TRUTH)
-const hasShiftForDay = async (staffId, date, req) => {
-  // FIXED: Use Lagos timezone for day of week
-  const dayOfWeek = getLagosDayOfWeek(date);
-  const TenantShift = req.getTenantModel('Shift');
+// Returns the effective shift for a staff member on a given date.
+// Temporary shifts take priority over permanent weekly shifts.
+const getEffectiveShift = async (staffId, employeeId, dateStr, tenantId, TenantShift) => {
+  if (!TenantShift) return null;
 
-  if (!TenantShift) return false;
+  // 1. Check for an active temporary shift covering this date
+  if (employeeId) {
+    const tempShift = await TenantShift.findOne({
+      shiftType: 'temporary',
+      employeeId,
+      tenantId,
+      tempStartDate: { $lte: dateStr },
+      tempEndDate:   { $gte: dateStr },
+      isActive: true
+    });
+    if (tempShift) return tempShift;
+  }
 
-  const shift = await TenantShift.findOne({
-    staffId: staffId,
-    dayOfWeek: dayOfWeek,
-    tenantId: req.tenantId,
+  // 2. Fall back to permanent shift for this day of week
+  const dayOfWeek = getLagosDayOfWeek(new Date(dateStr + 'T00:00:00Z'));
+  return await TenantShift.findOne({
+    shiftType: { $ne: 'temporary' }, // matches 'permanent' and legacy docs without shiftType
+    staffId,
+    dayOfWeek,
+    tenantId,
     isActive: true
   });
+};
 
+// Check if staff has a shift for the given day (SHIFT IS SOURCE OF TRUTH)
+const hasShiftForDay = async (staffId, employeeId, date, req) => {
+  const dateStr = getLagosDateString(date);
+  const TenantShift = req.getTenantModel('Shift');
+  if (!TenantShift) return false;
+  const shift = await getEffectiveShift(staffId, employeeId, dateStr, req.tenantId, TenantShift);
   return !!shift;
 };
 
@@ -667,6 +693,41 @@ router.get('/report', async (req, res) => {
   }
 });
 
+// GET /manual-entries/recent — last N manual attendance entries (for admin review/delete)
+router.get('/manual-entries/recent', async (req, res) => {
+  try {
+    const TenantAttendance = req.getTenantModel('Attendance');
+    const TenantStaff = req.getTenantModel('Staff');
+    if (!TenantAttendance) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Attendance model not available' });
+
+    const limit = Math.min(parseInt(req.query.limit) || 30, 100);
+
+    const records = await TenantAttendance.find({
+      tenantId: req.tenantId,
+      adjustmentNote: { $regex: /^Manual entry/i },
+      employeeId: { $ne: 'HOLIDAY' }
+    })
+      .sort({ date: -1, updatedAt: -1 })
+      .limit(limit)
+      .select('_id employeeId date checkIn checkOut absent late lateMinutes earlyLeave earlyLeaveMinutes overtimeHours adjustmentNote subBusiness');
+
+    // Enrich with staff names
+    const staffCache = {};
+    const enriched = await Promise.all(records.map(async (rec) => {
+      if (!staffCache[rec.employeeId] && TenantStaff) {
+        const s = await TenantStaff.findOne({ employeeId: rec.employeeId, tenantId: req.tenantId }).select('firstName lastName');
+        staffCache[rec.employeeId] = s ? `${s.firstName} ${s.lastName || ''}`.trim() : rec.employeeId;
+      }
+      return { ...rec.toObject(), staffName: staffCache[rec.employeeId] || rec.employeeId };
+    }));
+
+    res.json({ success: true, records: enriched });
+  } catch (err) {
+    logger.error('Error fetching manual entries', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'FETCH_MANUAL_ENTRIES_FAILED', message: err.message });
+  }
+});
+
 // Enhanced manual attendance entry - FIXED with tenant isolation
 router.post('/manual', async (req, res) => {
   try {
@@ -714,23 +775,19 @@ router.post('/manual', async (req, res) => {
       });
     }
 
-    // FIXED: Use Lagos timezone for date and day of week
+    // FIXED: Use Lagos timezone for date string
     const dateStr = getLagosDateString(entryDate);
-    const dayOfWeek = getDayOfWeek(entryDate);
-    
+
+    // Resolve effective shift: temporary shift takes priority over permanent
     let shift = null;
     if (TenantShift) {
-      shift = await TenantShift.findOne({ 
-        staffId: staff._id, 
-        dayOfWeek,
-        tenantId: req.tenantId // CRITICAL: Tenant filtering
-      });
+      shift = await getEffectiveShift(staff._id, employeeId, dateStr, req.tenantId, TenantShift);
     }
 
     if (!shift) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'NO_SHIFT_FOUND',
-        message: 'No shift found for this staff on this day' 
+        message: 'No shift (permanent or temporary) found for this staff on this day'
       });
     }
 
@@ -1127,12 +1184,7 @@ router.put('/:id', async (req, res) => {
       });
       
       if (staff) {
-        const dayOfWeek = getDayOfWeek(new Date(attendance.date));
-        const shift = await TenantShift.findOne({ 
-          staffId: staff._id, 
-          dayOfWeek,
-          tenantId: req.tenantId // CRITICAL: Tenant filtering
-        });
+        const shift = await getEffectiveShift(staff._id, attendance.employeeId, attendance.date, req.tenantId, TenantShift);
         
         if (shift) {
           // FIXED: Use Lagos timezone for shift time calculations
@@ -1685,189 +1737,126 @@ router.get('/shifts', async (req, res) => {
 router.post('/holidays', async (req, res) => {
   try {
     const { name, date } = req.body;
-    
+
     if (!name || !date) {
-      return res.status(400).json({ 
-        error: 'MISSING_REQUIRED_FIELDS',
-        message: 'Holiday name and date are required' 
-      });
+      return res.status(400).json({ error: 'MISSING_REQUIRED_FIELDS', message: 'Holiday name and date are required' });
     }
 
-    const TenantAttendance = req.getTenantModel('Attendance');
-    
-    if (!TenantAttendance) {
-      return res.status(500).json({ 
-        error: 'TENANT_MODEL_UNAVAILABLE',
-        message: 'Attendance model not available' 
-      });
-    }
+    const TenantHoliday = req.getTenantModel('Holiday');
+    if (!TenantHoliday) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Holiday model not available' });
 
     const holidayDate = new Date(date);
     const year = holidayDate.getFullYear();
-    // FIXED: Use Lagos timezone for date string
     const dateStr = getLagosDateString(holidayDate);
-    
-    // FIXED: Check if holiday already exists for this date with proper tenant filtering
-    const existingHoliday = await TenantAttendance.findOne({
-      employeeId: 'HOLIDAY',
-      date: dateStr,
-      tenantId: req.tenantId // CRITICAL: Tenant filtering
-    });
-    
-    if (existingHoliday) {
-      return res.status(400).json({ 
-        error: 'HOLIDAY_EXISTS',
-        message: 'Holiday already exists for this date' 
-      });
-    }
-    
-    // Create MANUAL holiday record only
-    const holidayRecord = new TenantAttendance({
-      employeeId: 'HOLIDAY',
-      date: dateStr,
-      subBusiness: 'General',
-      absent: true,
-      holidays: [{ name, date: holidayDate, year }],
-      adjustmentNote: `Manual holiday: ${name}`, // Clear manual designation
-      tenantId: req.tenantId // CRITICAL: Ensure tenant isolation
-    });
 
-    await holidayRecord.save();
-    
-    logger.info('Manual holiday created', {
+    const exists = await TenantHoliday.findOne({ tenantId: req.tenantId, date: dateStr });
+    if (exists) return res.status(400).json({ error: 'HOLIDAY_EXISTS', message: 'Holiday already exists for this date' });
+
+    const holiday = await TenantHoliday.create({
       tenantId: req.tenantId,
       name,
       date: dateStr,
+      year,
       createdBy: req.user.username
     });
-    
+
+    logger.info('Holiday created', { tenantId: req.tenantId, name, date: dateStr, createdBy: req.user.username });
     res.status(201).json({
       success: true,
       message: 'Holiday created successfully',
-      holiday: {
-        _id: holidayRecord.holidays[0]._id,
-        name: holidayRecord.holidays[0].name,
-        date: holidayRecord.holidays[0].date,
-        year: holidayRecord.holidays[0].year
-      }
+      holiday: { _id: holiday._id, name: holiday.name, date: holiday.date, year: holiday.year }
     });
 
   } catch (err) {
-    logger.error('Error creating holiday', {
-      tenantId: req.tenantId,
-      error: err.message,
-      userId: req.user.id
-    });
-    res.status(500).json({ 
-      error: 'CREATE_HOLIDAY_FAILED',
-      message: 'Server error: ' + err.message 
-    });
+    logger.error('Error creating holiday', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'CREATE_HOLIDAY_FAILED', message: 'Server error: ' + err.message });
   }
 });
 
-// Get all manual holidays only - FIXED with tenant isolation
+// Get holidays — reads from Holiday model, falls back to legacy Attendance records
 router.get('/holidays', async (req, res) => {
   try {
+    const TenantHoliday = req.getTenantModel('Holiday');
     const TenantAttendance = req.getTenantModel('Attendance');
-    
-    if (!TenantAttendance) {
-      return res.json([]);
-    }
-    
-    // FIXED: Proper tenant filtering for holidays
-    const holidayRecords = await TenantAttendance.find({ 
-      employeeId: 'HOLIDAY',
-      tenantId: req.tenantId, // CRITICAL: Tenant filtering
-      'holidays.0': { $exists: true },
-      // Only return manually created holidays
-      adjustmentNote: { $not: { $regex: /Automatically detected/i } }
-    }).lean();
-    
-    const holidays = holidayRecords.reduce((acc, curr) => {
-      return [...acc, ...curr.holidays.map(holiday => ({
-        _id: holiday._id,
-        name: holiday.name,
-        date: holiday.date,
-        year: holiday.year
-      }))];
-    }, []);
-    
-    // Sort by date (newest first)
-    holidays.sort((a, b) => new Date(b.date) - new Date(a.date));
-    
-    console.log(`Retrieved ${holidays.length} manual holidays for tenant: ${req.tenantId}`);
-    res.json(holidays);
 
+    let holidays = [];
+
+    // Primary: Holiday model
+    if (TenantHoliday) {
+      const docs = await TenantHoliday.find({ tenantId: req.tenantId }).sort({ date: -1 }).lean();
+      holidays = docs.map(h => ({ _id: h._id, name: h.name, date: h.date, year: h.year }));
+    }
+
+    // Legacy fallback: Attendance-based holidays (backward compat)
+    if (TenantAttendance) {
+      const holidayDates = new Set(holidays.map(h => typeof h.date === 'string' ? h.date : getLagosDateString(new Date(h.date))));
+      const legacyRecords = await TenantAttendance.find({
+        employeeId: 'HOLIDAY',
+        tenantId: req.tenantId,
+        'holidays.0': { $exists: true },
+        adjustmentNote: { $not: { $regex: /Automatically detected/i } }
+      }).lean();
+
+      for (const record of legacyRecords) {
+        for (const h of record.holidays) {
+          const ds = getLagosDateString(new Date(h.date));
+          if (!holidayDates.has(ds)) {
+            holidays.push({ _id: h._id, name: h.name, date: h.date, year: h.year });
+            holidayDates.add(ds);
+          }
+        }
+      }
+
+      holidays.sort((a, b) => new Date(b.date) - new Date(a.date));
+    }
+
+    res.json(holidays);
   } catch (err) {
-    logger.error('Error fetching holidays', {
-      tenantId: req.tenantId,
-      error: err.message,
-      userId: req.user.id
-    });
-    res.status(500).json({ 
-      error: 'FETCH_HOLIDAYS_FAILED',
-      message: 'Server error: ' + err.message 
-    });
+    logger.error('Error fetching holidays', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'FETCH_HOLIDAYS_FAILED', message: 'Server error: ' + err.message });
   }
 });
 
-// Delete holiday - FIXED with tenant isolation
+// Delete holiday — removes from Holiday model; also removes legacy Attendance record if present
 router.delete('/holidays/:holidayId', async (req, res) => {
   try {
+    const TenantHoliday = req.getTenantModel('Holiday');
     const TenantAttendance = req.getTenantModel('Attendance');
-    
-    if (!TenantAttendance) {
-      return res.status(500).json({ 
-        error: 'TENANT_MODEL_UNAVAILABLE',
-        message: 'Attendance model not available' 
-      });
-    }
-    
-    // FIXED: Proper tenant filtering for holiday deletion
-    const attendance = await TenantAttendance.findOne({ 
-      employeeId: 'HOLIDAY',
-      tenantId: req.tenantId, // CRITICAL: Tenant filtering
-      'holidays._id': req.params.holidayId 
-    });
-    
-    if (!attendance) {
-      return res.status(404).json({ 
-        error: 'HOLIDAY_NOT_FOUND',
-        message: 'Holiday not found' 
-      });
+    const { holidayId } = req.params;
+    let deleted = false;
+
+    // Try Holiday model first
+    if (TenantHoliday) {
+      const result = await TenantHoliday.findOneAndDelete({ _id: holidayId, tenantId: req.tenantId });
+      if (result) deleted = true;
     }
 
-    attendance.holidays.id(req.params.holidayId).remove();
-    
-    // If no more holidays in this record, delete the entire record
-    if (attendance.holidays.length === 0) {
-      await TenantAttendance.findByIdAndDelete(attendance._id);
-    } else {
-      await attendance.save();
+    // Also try legacy Attendance-based holiday (backward compat)
+    if (!deleted && TenantAttendance) {
+      const attendance = await TenantAttendance.findOne({
+        employeeId: 'HOLIDAY',
+        tenantId: req.tenantId,
+        'holidays._id': holidayId
+      });
+      if (attendance) {
+        attendance.holidays.id(holidayId).remove();
+        if (attendance.holidays.length === 0) {
+          await TenantAttendance.findByIdAndDelete(attendance._id);
+        } else {
+          await attendance.save();
+        }
+        deleted = true;
+      }
     }
-    
-    logger.info('Manual holiday deleted', {
-      tenantId: req.tenantId,
-      holidayId: req.params.holidayId,
-      deletedBy: req.user.username
-    });
-    
-    res.json({ 
-      success: true,
-      message: 'Holiday deleted successfully' 
-    });
+
+    if (!deleted) return res.status(404).json({ error: 'HOLIDAY_NOT_FOUND', message: 'Holiday not found' });
+
+    logger.info('Holiday deleted', { tenantId: req.tenantId, holidayId, deletedBy: req.user.username });
+    res.json({ success: true, message: 'Holiday deleted successfully' });
 
   } catch (err) {
-    logger.error('Error deleting holiday', {
-      tenantId: req.tenantId,
-      holidayId: req.params.holidayId,
-      error: err.message,
-      userId: req.user.id
-    });
-    res.status(500).json({ 
-      error: 'DELETE_HOLIDAY_FAILED',
-      message: 'Server error: ' + err.message 
-    });
+    logger.error('Error deleting holiday', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'DELETE_HOLIDAY_FAILED', message: 'Server error: ' + err.message });
   }
 });
 
@@ -2061,13 +2050,6 @@ router.post('/leaves/:id/approve', async (req, res) => {
       });
     }
 
-    if (action === 'reject' && !reason) {
-      return res.status(400).json({
-        error: 'MISSING_REASON',
-        message: 'Rejection reason is required'
-      });
-    }
-
     const TenantLeaveRequest = req.getTenantModel('LeaveRequest');
 
     if (!TenantLeaveRequest) {
@@ -2145,6 +2127,384 @@ router.post('/leaves/:id/approve', async (req, res) => {
   }
 });
 
+// PUT /leaves/:id — update a pending leave request
+router.put('/leaves/:id', async (req, res) => {
+  try {
+    const TenantLeaveRequest = req.getTenantModel('LeaveRequest');
+    if (!TenantLeaveRequest) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'LeaveRequest model not available' });
+
+    const leave = await TenantLeaveRequest.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!leave) return res.status(404).json({ error: 'LEAVE_NOT_FOUND', message: 'Leave request not found' });
+
+    if (leave.status !== 'pending') {
+      return res.status(400).json({ error: 'ALREADY_PROCESSED', message: 'Only pending leave requests can be edited' });
+    }
+
+    const { startDate, endDate, reason, leaveType } = req.body;
+    if (startDate) leave.startDate = new Date(startDate);
+    if (endDate) leave.endDate = new Date(endDate);
+    if (reason) leave.reason = reason;
+    if (leaveType) leave.leaveType = leaveType;
+
+    await leave.save();
+
+    logger.info('Leave request updated', { tenantId: req.tenantId, leaveId: req.params.id, updatedBy: req.user.username });
+    res.json({ success: true, message: 'Leave request updated successfully', ...leave.toObject() });
+  } catch (err) {
+    logger.error('Error updating leave request', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'UPDATE_LEAVE_FAILED', message: err.message });
+  }
+});
+
+// DELETE /leaves/:id — delete a leave request (pending/rejected only)
+router.delete('/leaves/:id', async (req, res) => {
+  try {
+    const TenantLeaveRequest = req.getTenantModel('LeaveRequest');
+    if (!TenantLeaveRequest) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'LeaveRequest model not available' });
+
+    const leave = await TenantLeaveRequest.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!leave) return res.status(404).json({ error: 'LEAVE_NOT_FOUND', message: 'Leave request not found' });
+
+    if (leave.status === 'approved') {
+      return res.status(400).json({ error: 'CANNOT_DELETE_APPROVED', message: 'Approved leave requests cannot be deleted. Reject it first.' });
+    }
+
+    await TenantLeaveRequest.deleteOne({ _id: req.params.id, tenantId: req.tenantId });
+
+    logger.info('Leave request deleted', { tenantId: req.tenantId, leaveId: req.params.id, deletedBy: req.user.username });
+    res.json({ success: true, message: 'Leave request deleted successfully' });
+  } catch (err) {
+    logger.error('Error deleting leave request', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'DELETE_LEAVE_FAILED', message: err.message });
+  }
+});
+
+// ============================================================
+// TEMPORARY SHIFTS
+// ============================================================
+
+// GET /temporary-shifts — list temp shifts (excludes expired by default)
+router.get('/temporary-shifts', async (req, res) => {
+  try {
+    const { employeeId, includeExpired } = req.query;
+    const TenantShift = req.getTenantModel('Shift');
+    if (!TenantShift) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Shift model not available' });
+
+    const today = getLagosDateString(new Date());
+    const query = { tenantId: req.tenantId, shiftType: 'temporary', isActive: true };
+    if (employeeId) query.employeeId = employeeId;
+    if (includeExpired !== 'true') query.tempEndDate = { $gte: today };
+
+    const shifts = await TenantShift.find(query).sort({ tempStartDate: 1 }).lean();
+
+    const TenantStaff = req.getTenantModel('Staff');
+    const staffMap = {};
+    if (TenantStaff) {
+      const staffList = await TenantStaff.find({ tenantId: req.tenantId, status: 'active' }, 'employeeId firstName lastName').lean();
+      staffList.forEach(s => { staffMap[s.employeeId] = `${s.firstName} ${s.lastName || ''}`.trim(); });
+    }
+
+    const normalized = shifts.map(s => ({
+      ...s,
+      startDate: s.tempStartDate,
+      endDate:   s.tempEndDate,
+      staffName: staffMap[s.employeeId] || s.employeeId
+    }));
+
+    res.json({ success: true, shifts: normalized, total: normalized.length });
+  } catch (err) {
+    logger.error('Error fetching temporary shifts', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'FETCH_TEMP_SHIFTS_FAILED', message: err.message });
+  }
+});
+
+// POST /temporary-shifts — create a temporary shift
+router.post('/temporary-shifts', async (req, res) => {
+  try {
+    const { employeeId, startDate, endDate, resumptionTime, closingTime, isHalfDay, isFullDayReference, reason } = req.body;
+
+    if (!employeeId || !startDate || !endDate || !resumptionTime || !closingTime) {
+      return res.status(400).json({ error: 'MISSING_REQUIRED_FIELDS', message: 'employeeId, startDate, endDate, resumptionTime, closingTime are required' });
+    }
+    if (!isValidTimeFormat(resumptionTime) || !isValidTimeFormat(closingTime)) {
+      return res.status(400).json({ error: 'INVALID_TIME_FORMAT', message: 'Use HH:mm format (e.g., 09:00)' });
+    }
+    if (startDate > endDate) {
+      return res.status(400).json({ error: 'INVALID_DATE_RANGE', message: 'startDate must be <= endDate' });
+    }
+
+    const TenantStaff = req.getTenantModel('Staff');
+    const TenantShift = req.getTenantModel('Shift');
+    if (!TenantStaff || !TenantShift) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Required models not available' });
+
+    const staff = await TenantStaff.findOne({
+      employeeId,
+      tenantId: req.tenantId,
+      employeeId: { $not: /^CONFIG_/ }
+    });
+    if (!staff) return res.status(404).json({ error: 'STAFF_NOT_FOUND', message: 'Staff not found' });
+
+    const shift = new TenantShift({
+      shiftType:          'temporary',
+      staffId:            staff._id,
+      employeeId,
+      tempStartDate:      startDate,
+      tempEndDate:        endDate,
+      resumptionTime,
+      closingTime,
+      isHalfDay:          isHalfDay || false,
+      isFullDayReference: isFullDayReference || false,
+      reason:             reason || '',
+      tenantId:           req.tenantId,
+      isActive:           true,
+      createdBy:          req.user.username
+    });
+
+    await shift.save();
+
+    logger.info('Temporary shift created', { tenantId: req.tenantId, employeeId, startDate, endDate, createdBy: req.user.username });
+
+    res.status(201).json({
+      success: true,
+      shift: { ...shift.toObject(), startDate: shift.tempStartDate, endDate: shift.tempEndDate },
+      message: `Temporary shift created for ${employeeId} (${startDate} → ${endDate})`
+    });
+  } catch (err) {
+    logger.error('Error creating temporary shift', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'CREATE_TEMP_SHIFT_FAILED', message: err.message });
+  }
+});
+
+// PUT /temporary-shifts/:id — update a temporary shift
+router.put('/temporary-shifts/:id', async (req, res) => {
+  try {
+    const { startDate, endDate, resumptionTime, closingTime, isHalfDay, isFullDayReference, reason } = req.body;
+    const TenantShift = req.getTenantModel('Shift');
+    if (!TenantShift) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Shift model not available' });
+
+    const shift = await TenantShift.findOne({ _id: req.params.id, tenantId: req.tenantId, shiftType: 'temporary' });
+    if (!shift) return res.status(404).json({ error: 'TEMP_SHIFT_NOT_FOUND', message: 'Temporary shift not found' });
+
+    if (resumptionTime && !isValidTimeFormat(resumptionTime)) return res.status(400).json({ error: 'INVALID_TIME_FORMAT', message: 'Use HH:mm format' });
+    if (closingTime    && !isValidTimeFormat(closingTime))    return res.status(400).json({ error: 'INVALID_TIME_FORMAT', message: 'Use HH:mm format' });
+
+    const newStart = startDate || shift.tempStartDate;
+    const newEnd   = endDate   || shift.tempEndDate;
+    if (newStart > newEnd) return res.status(400).json({ error: 'INVALID_DATE_RANGE', message: 'startDate must be <= endDate' });
+
+    if (startDate      !== undefined) shift.tempStartDate      = startDate;
+    if (endDate        !== undefined) shift.tempEndDate        = endDate;
+    if (resumptionTime !== undefined) shift.resumptionTime     = resumptionTime;
+    if (closingTime    !== undefined) shift.closingTime        = closingTime;
+    if (isHalfDay      !== undefined) shift.isHalfDay          = isHalfDay;
+    if (isFullDayReference !== undefined) shift.isFullDayReference = isFullDayReference;
+    if (reason         !== undefined) shift.reason             = reason;
+    shift.updatedBy = req.user.username;
+
+    await shift.save();
+
+    logger.info('Temporary shift updated', { tenantId: req.tenantId, shiftId: req.params.id, updatedBy: req.user.username });
+
+    res.json({
+      success: true,
+      shift: { ...shift.toObject(), startDate: shift.tempStartDate, endDate: shift.tempEndDate },
+      message: 'Temporary shift updated successfully'
+    });
+  } catch (err) {
+    logger.error('Error updating temporary shift', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'UPDATE_TEMP_SHIFT_FAILED', message: err.message });
+  }
+});
+
+// DELETE /temporary-shifts/:id — remove a temporary shift
+router.delete('/temporary-shifts/:id', async (req, res) => {
+  try {
+    const TenantShift = req.getTenantModel('Shift');
+    if (!TenantShift) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Shift model not available' });
+
+    const shift = await TenantShift.findOneAndDelete({ _id: req.params.id, tenantId: req.tenantId, shiftType: 'temporary' });
+    if (!shift) return res.status(404).json({ error: 'TEMP_SHIFT_NOT_FOUND', message: 'Temporary shift not found' });
+
+    logger.info('Temporary shift deleted', { tenantId: req.tenantId, shiftId: req.params.id, deletedBy: req.user.username });
+
+    res.json({ success: true, message: 'Temporary shift deleted successfully' });
+  } catch (err) {
+    logger.error('Error deleting temporary shift', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'DELETE_TEMP_SHIFT_FAILED', message: err.message });
+  }
+});
+
+// POST /recalculate — Recalculate attendance records for a date range
+// Stage 1: Update existing records with corrected late/earlyLeave/overtime (skip manual entries)
+// Stage 2: Create absent records for scheduled staff with no attendance record that day
+router.post('/recalculate', async (req, res) => {
+  try {
+    const { startDate, endDate, staffIds } = req.body;
+
+    if (!startDate || !endDate) {
+      return res.status(400).json({ error: 'DATE_RANGE_REQUIRED', message: 'startDate and endDate are required' });
+    }
+
+    const TenantAttendance = req.getTenantModel('Attendance');
+    const TenantStaff = req.getTenantModel('Staff');
+    const TenantShift = req.getTenantModel('Shift');
+    const TenantLeaveRequest = req.getTenantModel('LeaveRequest');
+
+    if (!TenantAttendance || !TenantStaff) {
+      return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Required models not available' });
+    }
+
+    // Get active staff (optionally filtered by staffIds array)
+    const staffQuery = { tenantId: req.tenantId, isActive: true };
+    if (staffIds && Array.isArray(staffIds) && staffIds.length > 0) {
+      staffQuery.employeeId = { $in: staffIds };
+    }
+    const allStaff = await TenantStaff.find(staffQuery).select('_id employeeId firstName lastName subBusiness');
+
+    if (allStaff.length === 0) {
+      return res.json({ success: true, processedDates: 0, updatedRecords: 0, createdAbsences: 0, skipped: 0, errors: [] });
+    }
+
+    // Build date list (inclusive), skip future dates
+    const todayStr = getLagosDateString(new Date());
+    const dates = [];
+    const cur = new Date(startDate + 'T00:00:00Z');
+    const endD = new Date(endDate + 'T00:00:00Z');
+    while (cur <= endD) {
+      const ds = getLagosDateString(cur);
+      if (ds <= todayStr) dates.push(ds);
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    const recalcTag = `Recalculated on ${todayStr}`;
+    const stats = { processedDates: dates.length, updatedRecords: 0, createdAbsences: 0, skipped: 0, errors: [] };
+
+    for (const dateStr of dates) {
+      // Skip holidays — check Holiday model first, then legacy Attendance records
+      const TenantHoliday = req.getTenantModel('Holiday');
+      let isHoliday = false;
+      if (TenantHoliday) {
+        isHoliday = !!(await TenantHoliday.findOne({ tenantId: req.tenantId, date: dateStr }));
+      }
+      if (!isHoliday && TenantAttendance) {
+        isHoliday = !!(await TenantAttendance.findOne({
+          employeeId: 'HOLIDAY',
+          date: dateStr,
+          tenantId: req.tenantId,
+          adjustmentNote: { $not: { $regex: /Automatically detected/i } }
+        }));
+      }
+      if (isHoliday) { stats.skipped += allStaff.length; continue; }
+
+      // Date as Date object for leave range queries
+      const dateObj = new Date(dateStr + 'T12:00:00+01:00');
+
+      for (const staff of allStaff) {
+        try {
+          const { employeeId } = staff;
+
+          // Get effective shift (temp > permanent) — if none, staff not scheduled this day
+          const shift = TenantShift
+            ? await getEffectiveShift(staff._id, employeeId, dateStr, req.tenantId, TenantShift)
+            : null;
+          if (!shift) { stats.skipped++; continue; }
+
+          // Skip staff on approved leave
+          if (TenantLeaveRequest) {
+            const onLeave = await TenantLeaveRequest.findOne({
+              employeeId,
+              tenantId: req.tenantId,
+              status: 'approved',
+              startDate: { $lte: dateObj },
+              endDate: { $gte: dateObj }
+            });
+            if (onLeave) { stats.skipped++; continue; }
+          }
+
+          const existing = await TenantAttendance.findOne({ employeeId, date: dateStr, tenantId: req.tenantId });
+
+          if (existing) {
+            // Preserve records that were manually entered
+            if (existing.adjustmentNote && existing.adjustmentNote.startsWith('Manual entry')) {
+              stats.skipped++;
+              continue;
+            }
+
+            // Stage 1: Recalculate timing fields from effective shift
+            if (!existing.absent) {
+              const expectedStart = createLagosShiftTime(dateObj, shift.resumptionTime);
+              const expectedEnd = createLagosShiftTime(dateObj, shift.closingTime);
+
+              if (existing.checkIn) {
+                const ci = new Date(existing.checkIn);
+                const graceStart = new Date(expectedStart.getTime() + 5 * 60 * 1000);
+                existing.late = ci > graceStart;
+                existing.lateMinutes = existing.late ? timeDiffMinutes(ci, expectedStart) : 0;
+              }
+
+              if (existing.checkOut) {
+                const co = new Date(existing.checkOut);
+                if (co < expectedEnd) {
+                  existing.earlyLeave = true;
+                  existing.earlyLeaveMinutes = timeDiffMinutes(expectedEnd, co);
+                  existing.overtimeHours = 0;
+                } else {
+                  existing.earlyLeave = false;
+                  existing.earlyLeaveMinutes = 0;
+                  existing.overtimeHours = timeDiffMinutes(co, expectedEnd) / 60;
+                }
+              }
+            }
+
+            existing.adjustmentNote = recalcTag;
+            await existing.save();
+            stats.updatedRecords++;
+
+          } else {
+            // Stage 2: No record → create absent
+            await new TenantAttendance({
+              employeeId,
+              date: dateStr,
+              subBusiness: staff.subBusiness || 'General',
+              absent: true,
+              checkIn: null,
+              checkOut: null,
+              late: false,
+              lateMinutes: 0,
+              earlyLeave: false,
+              earlyLeaveMinutes: 0,
+              overtimeHours: 0,
+              adjustmentNote: recalcTag,
+              tenantId: req.tenantId
+            }).save();
+            stats.createdAbsences++;
+          }
+        } catch (staffErr) {
+          stats.errors.push({ employeeId: staff.employeeId, date: dateStr, error: staffErr.message });
+        }
+      }
+    }
+
+    logger.info('Attendance recalculation completed', {
+      tenantId: req.tenantId,
+      triggeredBy: req.user.username,
+      startDate,
+      endDate,
+      ...stats
+    });
+
+    res.json({
+      success: true,
+      message: `Recalculation complete: ${stats.updatedRecords} updated, ${stats.createdAbsences} absences created, ${stats.skipped} skipped`,
+      ...stats
+    });
+
+  } catch (err) {
+    logger.error('Attendance recalculation failed', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'RECALCULATE_FAILED', message: err.message });
+  }
+});
+
 console.log('✅ COMPLETE ATTENDANCE ROUTES LOADED - Single-Tenant');
 console.log('   ✅ Manual holiday management only (no auto-detection)');
 console.log('   ✅ All original functionality preserved');
@@ -2153,5 +2513,7 @@ console.log('   ✅ Complete shift, leave, and analytics systems');
 console.log('   ✅ Graceful handling of missing models');
 console.log('   ✅ Complete tenant isolation throughout');
 console.log('   ✅ Leave request management system');
+console.log('   ✅ Temporary shift system (getEffectiveShift priority)');
+console.log('   ✅ Recalculation tool (Stage 1: update + Stage 2: fill absences)');
 
 module.exports = router;

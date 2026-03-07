@@ -38,6 +38,7 @@ const getModel = (baseModelName) => {
     'AttendancePhoto': 'attendancephotos',
     'Shift': 'shifts',
     'LeaveRequest': 'leaverequests',
+    'Holiday': 'holidays',
     'Device': 'devices',
     'DeviceCommand': 'devicecommands',
     'Customer': 'customers',

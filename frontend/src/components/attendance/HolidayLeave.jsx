@@ -17,11 +17,11 @@ const HolidayLeave = ({
   editingLeave,
   setEditingLeave,
   handleAddHoliday,
-  deleteHoliday,
+  handleDeleteHoliday,
   handleAddLeave,
   deleteLeave,
-  handleUpdateLeave,
-  isTerminated,
+  editLeave,
+  loading,
 }) => {
   const { logout } = useContext(AuthContext);
   const navigate = useNavigate();
@@ -127,7 +127,7 @@ const HolidayLeave = ({
                     className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
                     placeholder="e.g., Christmas Day"
                     required
-                    disabled={isTerminated}
+                   
                   />
                 </div>
                 <div>
@@ -140,14 +140,14 @@ const HolidayLeave = ({
                     onChange={(e) => setNewHoliday({ ...newHoliday, date: e.target.value })}
                     className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
                     required
-                    disabled={isTerminated}
+                   
                   />
                 </div>
               </div>
               <button
                 type="submit"
                 className="mt-4 px-6 py-3 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors flex items-center gap-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={isTerminated}
+               
               >
                 <FaPlus /> Add Holiday
               </button>
@@ -166,9 +166,9 @@ const HolidayLeave = ({
                       </div>
                     </div>
                     <button
-                      onClick={() => { if (window.confirm('Delete this holiday?')) deleteHoliday(holiday._id); }}
+                      onClick={() => { if (window.confirm('Delete this holiday?')) handleDeleteHoliday(holiday._id); }}
                       className="text-red-600 hover:text-red-900 p-2 hover:bg-red-50 rounded"
-                      disabled={isTerminated}
+                     
                     >
                       <FaTrash />
                     </button>
@@ -221,12 +221,12 @@ const HolidayLeave = ({
                           <button
                             onClick={() => {
                               if (window.confirm('Are you sure you want to delete this holiday?')) {
-                                deleteHoliday(holiday._id);
+                                handleDeleteHoliday(holiday._id);
                               }
                             }}
                             className="text-red-600 hover:text-red-900 p-2 hover:bg-red-50 rounded"
                             title="Delete holiday"
-                            disabled={isTerminated}
+                           
                           >
                             <FaTrash />
                           </button>
@@ -259,7 +259,7 @@ const HolidayLeave = ({
 
             {/* Add/Edit Leave Form */}
             <form
-              onSubmit={editingLeave ? handleUpdateLeave : handleAddLeave}
+              onSubmit={editingLeave ? editLeave : handleAddLeave}
               className="mb-4 sm:mb-6 p-3 sm:p-4 bg-blue-50 rounded-lg"
             >
               <h4 className="text-base sm:text-lg font-semibold text-gray-900 mb-3 sm:mb-4">
@@ -281,7 +281,7 @@ const HolidayLeave = ({
                     }
                     className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     required
-                    disabled={isTerminated || editingLeave}
+                    disabled={editingLeave}
                   >
                     <option value="">Select active employee...</option>
                     {activeStaff.map((s) => (
@@ -310,7 +310,7 @@ const HolidayLeave = ({
                     }
                     className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     required
-                    disabled={isTerminated}
+                   
                   >
                     <option value="Annual">Annual Leave</option>
                     <option value="Sick">Sick Leave</option>
@@ -336,7 +336,7 @@ const HolidayLeave = ({
                     }
                     className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     required
-                    disabled={isTerminated}
+                   
                   />
                 </div>
 
@@ -354,7 +354,7 @@ const HolidayLeave = ({
                     }
                     className="w-full p-3 border-2 border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
                     required
-                    disabled={isTerminated}
+                   
                   />
                 </div>
 
@@ -373,7 +373,7 @@ const HolidayLeave = ({
                     rows="3"
                     placeholder="Enter reason for leave..."
                     required
-                    disabled={isTerminated}
+                   
                   />
                 </div>
               </div>
@@ -382,7 +382,7 @@ const HolidayLeave = ({
                 <button
                   type="submit"
                   className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2 font-medium disabled:opacity-50 disabled:cursor-not-allowed"
-                  disabled={isTerminated}
+                 
                 >
                   <FaPlus /> {editingLeave ? 'Update Leave Request' : 'Create Leave Request'}
                 </button>
@@ -391,7 +391,7 @@ const HolidayLeave = ({
                     type="button"
                     onClick={() => setEditingLeave(null)}
                     className="px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors flex items-center gap-2 font-medium"
-                    disabled={isTerminated}
+                   
                   >
                     <FaTimes /> Cancel
                   </button>
@@ -492,7 +492,7 @@ const HolidayLeave = ({
                                     onClick={() => handleApproveLeave(leave._id, 'approve')}
                                     className="text-green-600 hover:text-green-900 px-2 sm:px-3 py-1 sm:py-1.5 hover:bg-green-50 rounded flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-green-300"
                                     title="Approve leave"
-                                    disabled={approvingLeave === leave._id || isTerminated}
+                                    disabled={approvingLeave === leave._id}
                                   >
                                     {approvingLeave === leave._id ? (
                                       <div className="animate-spin rounded-full h-3 w-3 border-b-2 border-green-600"></div>
@@ -507,7 +507,7 @@ const HolidayLeave = ({
                                     onClick={() => handleApproveLeave(leave._id, 'reject')}
                                     className="text-red-600 hover:text-red-900 px-2 sm:px-3 py-1 sm:py-1.5 hover:bg-red-50 rounded flex items-center gap-1 text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-red-300"
                                     title="Reject leave"
-                                    disabled={approvingLeave === leave._id || isTerminated}
+                                    disabled={approvingLeave === leave._id}
                                   >
                                     <FaTimes size={10} className="sm:w-3 sm:h-3" />
                                     <span className="hidden sm:inline">Reject</span>
@@ -529,7 +529,7 @@ const HolidayLeave = ({
                                   }
                                   className="text-blue-600 hover:text-blue-900 p-1.5 sm:px-3 sm:py-1.5 hover:bg-blue-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-blue-300"
                                   title="Edit leave request"
-                                  disabled={isTerminated || leave.status === 'Approved'}
+                                  disabled={leave.status === 'Approved'}
                                 >
                                   <FaEdit size={12} />
                                 </button>
@@ -541,7 +541,7 @@ const HolidayLeave = ({
                                   }}
                                   className="text-red-600 hover:text-red-900 p-1.5 sm:px-3 sm:py-1.5 hover:bg-red-50 rounded transition-colors disabled:opacity-50 disabled:cursor-not-allowed border border-red-300"
                                   title="Delete leave request"
-                                  disabled={isTerminated}
+                                 
                                 >
                                   <FaTrash size={12} />
                                 </button>

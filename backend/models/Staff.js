@@ -186,6 +186,16 @@ const staffSchema = new mongoose.Schema({
       nhis: { type: Boolean, default: false }
     },
 
+    // Annual tax reliefs (NTA 2025) — declared once per year, applied to all monthly payrolls.
+    // These reduce taxable income before PAYE brackets are applied.
+    // All values in Naira per annum.
+    taxReliefs: {
+      annualRent:             { type: Number, default: 0 }, // Actual rent paid — relief = 20% of rent, max ₦500k/yr
+      annualLifeAssurance:    { type: Number, default: 0 }, // Annual life assurance premiums
+      annualMortgageInterest: { type: Number, default: 0 }, // Mortgage interest on primary residence
+      voluntaryPensionAVC:    { type: Number, default: 0 }  // Voluntary Additional Voluntary Contributions
+    },
+
     // Overtime eligibility
     overtimeEligible: { type: Boolean, default: true },
 

@@ -21,6 +21,7 @@ const Sidebar = lazy(() => import("./components/Sidebar"));
 // Main Modules (loaded after login)
 const Attendance = lazy(() => import("./components/Attendance"));
 const Settings = lazy(() => import("./components/Settings"));
+const Payroll = lazy(() => import("./components/Payroll"));
 
 // Toast notifications
 import { ToastContainer } from 'react-toastify';
@@ -43,9 +44,10 @@ const preloadModules = () => {
   // First batch - Core modules (most used)
   import("./components/Attendance");
 
-  // Second batch - Settings
+  // Second batch - Settings and Payroll
   setTimeout(() => {
     import("./components/Settings");
+    import("./components/Payroll");
   }, 100);
 };
 
@@ -154,6 +156,7 @@ const ProtectedRoute = memo(({ children, isKiosk, requiredPermission }) => {
       // Redirect to first permitted module instead of showing access denied
       const moduleRoutes = [
         { key: 'attendance', route: '/' },
+        { key: 'payroll', route: '/payroll' },
         { key: 'settings', route: '/settings' },
       ];
       const firstPermitted = moduleRoutes.find(m => activeUser.permissions?.[m.key] === true);
@@ -277,6 +280,11 @@ const AppRoutes = memo(() => {
             <Route path="/settings" element={
               <ProtectedRoute requiredPermission="settings">
                 <Settings />
+              </ProtectedRoute>
+            } />
+            <Route path="/payroll" element={
+              <ProtectedRoute requiredPermission="payroll">
+                <Payroll />
               </ProtectedRoute>
             } />
 

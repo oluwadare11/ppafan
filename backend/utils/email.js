@@ -1025,7 +1025,7 @@ case 'other_revenue_entry':
 
 // ===== Staff Clock-In Email Template =====
 case 'staff_clock_in':
-  subject = `⏰ Staff Clock-In - ${data.staffName || 'Staff'} - ${data.tenantName || businessName}`;
+  subject = `⏰ Staff Clock-In - ${data.tenantName || businessName}`;
   html = `
     <div style="${styles.container}">
       <div style="${styles.card}">
@@ -1080,7 +1080,7 @@ case 'staff_clock_in':
 
 // ===== Staff Clock-Out Email Template =====
 case 'staff_clock_out':
-  subject = `⏰ Staff Clock-Out - ${data.staffName || 'Staff'} - ${data.tenantName || businessName}`;
+  subject = `⏰ Staff Clock-Out - ${data.tenantName || businessName}`;
   html = `
     <div style="${styles.container}">
       <div style="${styles.card}">
