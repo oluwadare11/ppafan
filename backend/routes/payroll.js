@@ -571,8 +571,16 @@ router.post('/process/generate', async (req, res) => {
 
     const workingDays = await calcWorkingDaysFromEngine(year, month);
 
+    // Cap attendance to yesterday — today's attendance is not yet closed
+    const todayLagos = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+    const yesterdayLagos = (() => {
+      const d = new Date(new Date(todayLagos + 'T12:00:00Z').getTime() - 86400000);
+      return d.toISOString().split('T')[0];
+    })();
+    const attEndDate = endDate < yesterdayLagos ? endDate : yesterdayLagos;
+
     const attendanceRecords = await Attendance.find({
-      date:       { $gte: startDate, $lte: endDate },
+      date:       { $gte: startDate, $lte: attEndDate },
       employeeId: { $not: /^(HOLIDAY|LEAVE_)/ }
     });
 
@@ -934,11 +942,16 @@ router.get('/process/:period', async (req, res) => {
     const { period } = req.params;
     if (!parsePeriodString(period)) return res.status(400).json({ error: 'INVALID_PERIOD' });
 
-    const records = await Payroll.find({ tenantId: TENANT_ID, period, calculationType: 'monthly' }).sort({ employeeName: 1 });
+    const records = await Payroll.find({ tenantId: TENANT_ID, period, calculationType: 'monthly' }).sort({ employeeNumber: 1 }).lean();
 
     if (records.length === 0) {
       return res.status(404).json({ error: 'NO_PAYROLL', message: `No payroll data found for ${period}` });
     }
+
+    const pEmpNums = [...new Set(records.map(r => String(r.employeeNumber)))];
+    const pStaff = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: pEmpNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const pNameMap = {};
+    pStaff.forEach(s => { pNameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
     const totals = records.reduce((acc, r) => ({
       totalGrossPay:     acc.totalGrossPay     + (r.payrollSummary?.grossSalary || 0),
@@ -959,7 +972,7 @@ router.get('/process/:period', async (req, res) => {
       records: records.map(r => ({
         _id:                 r._id,
         employeeNumber:      r.employeeNumber,
-        name:                r.employeeName,
+        name:                pNameMap[String(r.employeeNumber)] || r.employeeNumber,
         position:            r.position,
         department:          r.department,
         baseSalary:          r.salaryStructure?.baseSalary || 0,
@@ -1098,6 +1111,11 @@ router.get('/payslips/list/:period', async (req, res) => {
 
     if (records.length === 0) return res.json({ payslips: [], count: 0 });
 
+    const psEmpNums = [...new Set(records.map(r => String(r.employeeNumber)))];
+    const psStaff = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: psEmpNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const psNameMap = {};
+    psStaff.forEach(s => { psNameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
+
     const payslips = records.map(record => {
       const flat          = flattenPayrollRecord(record);
       const allowancesMap = {};
@@ -1107,7 +1125,7 @@ router.get('/payslips/list/:period', async (req, res) => {
 
       return {
         employeeNumber: flat.employeeNumber,
-        employeeName:   flat.name || flat.employeeName,
+        employeeName:   psNameMap[String(record.employeeNumber)] || flat.name || record.employeeNumber,
         period,
         department:     flat.department,
         position:       flat.position,
