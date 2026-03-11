@@ -34,7 +34,12 @@ const verifyRecaptcha = async (token, remoteIp = null) => {
       body: params
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (_) {
+      return { success: false, score: 0, action: null, hostname: null, errorCodes: ['invalid-response'] };
+    }
 
     logger.debug('reCAPTCHA verification response', {
       success: data.success,
@@ -44,18 +49,15 @@ const verifyRecaptcha = async (token, remoteIp = null) => {
     });
 
     return {
-      success: data.success,
+      success: data.success === true,
       score: data.score || 0,
-      action: data.action,
-      hostname: data.hostname,
+      action: data.action || null,
+      hostname: data.hostname || null,
       errorCodes: data['error-codes'] || []
     };
   } catch (error) {
-    logger.error('reCAPTCHA verification failed', {
-      error: error.message,
-      stack: error.stack
-    });
-    throw error;
+    logger.error('reCAPTCHA verification failed', { error: error.message });
+    return { success: false, score: 0, action: null, hostname: null, errorCodes: ['network-error'] };
   }
 };
 

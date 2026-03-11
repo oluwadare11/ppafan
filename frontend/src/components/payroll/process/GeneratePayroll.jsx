@@ -188,19 +188,25 @@ function GeneratePayroll({ period, periodStatus, settings, onSuccess, onError })
         </div>
       )}
 
-      {/* Generate button */}
+      {/* Generate button / generating state */}
       <div>
-        {(canGenerate || canRegenerate) && (
+        {generating ? (
+          <div className="flex items-center gap-4 p-5 bg-blue-50 border border-blue-200 rounded-lg">
+            <RefreshCw className="w-6 h-6 text-blue-600 animate-spin flex-shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-blue-800">Generating payroll, please wait…</p>
+              <p className="text-xs text-blue-600 mt-0.5">Calculating salaries, deductions and statutory contributions for all staff.</p>
+            </div>
+          </div>
+        ) : (canGenerate || canRegenerate) && (
           <button
             onClick={handleGenerateClick}
-            disabled={generating || preflightLoading}
+            disabled={preflightLoading}
             className={`flex items-center justify-center gap-2 px-8 py-3.5 text-white font-semibold rounded-lg transition-colors disabled:opacity-50 text-base ${
               canRegenerate ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-blue-600 hover:bg-blue-700'
             }`}
           >
-            {generating ? (
-              <><RefreshCw className="w-5 h-5 animate-spin" /> Generating...</>
-            ) : preflightLoading ? (
+            {preflightLoading ? (
               <><RefreshCw className="w-5 h-5 animate-spin" /> Checking staff...</>
             ) : (
               <>
