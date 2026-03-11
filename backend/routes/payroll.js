@@ -2147,29 +2147,168 @@ router.get('/deductions/calendar/:period', async (req, res) => {
 
 router.post('/deductions/recalculate-attendance', async (req, res) => {
   try {
-    const { startPeriod, endPeriod } = req.body;
+    const { startPeriod, endPeriod, force = false } = req.body;
     const periodRegex = /^\d{4}-\d{2}$/;
 
     if (!startPeriod || !periodRegex.test(startPeriod)) return res.status(400).json({ error: 'INVALID_START_PERIOD' });
     if (!endPeriod   || !periodRegex.test(endPeriod))   return res.status(400).json({ error: 'INVALID_END_PERIOD' });
-    if (startPeriod > endPeriod) return res.status(400).json({ error: 'INVALID_RANGE', message: 'startPeriod must be <= endPeriod' });
+    if (startPeriod > endPeriod) return res.status(400).json({ error: 'INVALID_RANGE', message: 'startPeriod must be ≤ endPeriod' });
 
-    const [startYear, startMonth] = startPeriod.split('-').map(Number);
-    const [endYear,   endMonth]   = endPeriod.split('-').map(Number);
+    const deductionSettings = (await PayrollSettings.findOne({ tenantId: TENANT_ID }).lean()) || {};
 
-    let processed = 0;
-    let periods   = 0;
-    let year = startYear, month = startMonth;
-
-    while (year < endYear || (year === endYear && month <= endMonth)) {
-      const result = await calculateHistoricalPayroll(year, month, 'recalc_attendance');
-      processed += result.processedStaff || 0;
-      periods++;
-      month++;
-      if (month > 12) { month = 1; year++; }
+    // Build list of YYYY-MM periods in range
+    const periods = [];
+    let [yr, mo] = startPeriod.split('-').map(Number);
+    const [endYr, endMo] = endPeriod.split('-').map(Number);
+    while (yr < endYr || (yr === endYr && mo <= endMo)) {
+      periods.push(`${yr}-${String(mo).padStart(2, '0')}`);
+      mo++; if (mo > 12) { mo = 1; yr++; }
     }
 
-    res.json({ success: true, processed, periods });
+    // Today in Lagos timezone
+    const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+
+    const summary = { periods: periods.length, cleared: 0, processed: 0, errors: [] };
+
+    for (const period of periods) {
+      const [year, month] = period.split('-').map(Number);
+      const startDate = `${year}-${String(month).padStart(2, '0')}-01`;
+      const lastDay   = new Date(year, month, 0).getDate();
+      const endDate   = `${year}-${String(month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+      // Skip paid/approved unless forced
+      const query = { tenantId: TENANT_ID, period, calculationType: 'monthly' };
+      if (!force) query.status = { $nin: ['paid', 'approved'] };
+      const payrollRecords = await Payroll.find(query).lean();
+
+      // ── PHASE 1: Wipe all attendance deduction fields ──────────────────────
+      const recordIds = payrollRecords.map(r => r._id);
+      if (recordIds.length > 0) {
+        await Payroll.updateMany(
+          { _id: { $in: recordIds } },
+          { $set: {
+            'otherDeductions.lateness':   { amount: 0, occurrences: 0, totalMinutes: 0 },
+            'otherDeductions.earlyLeave': { amount: 0, occurrences: 0, totalMinutes: 0 },
+            'otherDeductions.absence':    { amount: 0, days: 0 },
+            deductionBreakdown:           [],
+            'attendanceData.lateDays':    0,
+            'attendanceData.absentDays':  0,
+            'attendanceData.earlyLeaveDays': 0,
+            'attendanceData.lateMinutes': 0,
+            'attendanceData.earlyLeaveMinutes': 0
+          }}
+        );
+        summary.cleared += recordIds.length;
+      }
+
+      // Cap effective end date to yesterday (today's attendance not yet closed)
+      const yesterdayStr = (() => {
+        const d = new Date(new Date(todayStr + 'T12:00:00Z').getTime() - 86400000);
+        return d.toISOString().split('T')[0];
+      })();
+      const effectiveEndDate = endDate < yesterdayStr ? endDate : yesterdayStr;
+
+      // ── PHASE 2: Recalculate per employee ──────────────────────────────────
+      for (const pr of payrollRecords) {
+        try {
+          const empNo = pr.employeeNumber;
+
+          const attRecords = await Attendance.find({
+            tenantId: TENANT_ID,
+            employeeId: String(empNo),
+            date: { $gte: startDate, $lte: effectiveEndDate },
+            $or: [{ lateMinutes: { $gt: 0 } }, { absent: true }, { earlyLeaveMinutes: { $gt: 0 } }]
+          }).sort({ date: 1 }).lean();
+
+          const baseSalary  = pr.salaryStructure?.baseSalary || 0;
+          const grossSalary = pr.payrollSummary?.grossSalary || baseSalary;
+          const workingDays = pr.attendanceData?.standardWorkingDays || 26;
+          const dailyRate   = baseSalary / (workingDays || 26);
+          const dailyGross  = grossSalary / (workingDays || 26);
+
+          const breakdown = [];
+          let totalLateness    = 0;
+          let totalEarlyLeave  = 0;
+          let totalAbsence     = 0;
+          let lateDays         = 0;
+          let absentDays       = 0;
+          let earlyLeaveDays   = 0;
+          let totalLateMinutes = 0;
+          let totalELMinutes   = 0;
+
+          for (const att of attRecords) {
+            if ((att.lateMinutes || 0) > 0) {
+              const r = calculateLatenessDeduction(att.lateMinutes, dailyRate, deductionSettings);
+              if (r.amount > 0) {
+                totalLateness += r.amount;
+                lateDays++;
+                totalLateMinutes += att.lateMinutes;
+                breakdown.push({ date: att.date, type: 'lateness', amount: r.amount,
+                  minutes: att.lateMinutes, description: r.details?.calculation || `${att.lateMinutes} min late` });
+              }
+            }
+            if ((att.earlyLeaveMinutes || 0) > 0) {
+              const r = calculateEarlyLeaveDeduction(att.earlyLeaveMinutes, dailyRate, deductionSettings);
+              if (r.amount > 0) {
+                totalEarlyLeave += r.amount;
+                earlyLeaveDays++;
+                totalELMinutes += att.earlyLeaveMinutes;
+                breakdown.push({ date: att.date, type: 'early_leave', amount: r.amount,
+                  minutes: att.earlyLeaveMinutes, description: r.details?.calculation || `Left ${att.earlyLeaveMinutes} min early` });
+              }
+            }
+            if (att.absent === true) {
+              const r = calculateAbsenceDeduction(dailyRate, dailyGross, deductionSettings, false);
+              if (r.amount > 0) {
+                totalAbsence += r.amount;
+                absentDays++;
+                breakdown.push({ date: att.date, type: 'absence', amount: r.amount,
+                  minutes: 0, days: 1, description: r.details?.calculation || 'Full day absent' });
+              }
+            }
+          }
+
+          const newAttendanceTotal = totalLateness + totalEarlyLeave + totalAbsence;
+
+          // Recompute totals — all other deduction buckets unchanged
+          const storedPaye     = pr.statutoryDeductions?.paye?.monthlyTax || 0;
+          const storedPension  = pr.statutoryDeductions?.pension?.employeeContribution || 0;
+          const storedNhf      = pr.statutoryDeductions?.nhf?.amount || 0;
+          const storedNhis     = pr.statutoryDeductions?.nhis?.employeeContribution || 0;
+          const storedLoans    = (pr.otherDeductions?.loans    || []).reduce((s, l) => s + (l.monthlyDeduction || 0), 0);
+          const storedAdvances = (pr.otherDeductions?.advances || []).reduce((s, a) => s + (a.amount || 0), 0);
+          const storedUnpaid   = pr.otherDeductions?.unpaidLeave?.amount || 0;
+          const storedOther    = (pr.otherDeductions?.other    || []).reduce((s, o) => s + (o.amount || 0), 0);
+
+          const newTotalDeductions = storedPaye + storedPension + storedNhf + storedNhis
+            + newAttendanceTotal + storedLoans + storedAdvances + storedUnpaid + storedOther;
+          const newNetPay = Math.round(grossSalary - newTotalDeductions);
+
+          await Payroll.updateOne({ _id: pr._id }, { $set: {
+            'otherDeductions.lateness':               { amount: Math.round(totalLateness),   occurrences: lateDays,       totalMinutes: totalLateMinutes },
+            'otherDeductions.earlyLeave':             { amount: Math.round(totalEarlyLeave), occurrences: earlyLeaveDays, totalMinutes: totalELMinutes },
+            'otherDeductions.absence':                { amount: Math.round(totalAbsence),    days: absentDays },
+            'otherDeductions.totalOtherDeductions':   Math.round(newAttendanceTotal + storedLoans + storedAdvances + storedUnpaid + storedOther),
+            deductionBreakdown:                       breakdown,
+            'attendanceData.lateDays':                lateDays,
+            'attendanceData.absentDays':              absentDays,
+            'attendanceData.earlyLeaveDays':          earlyLeaveDays,
+            'attendanceData.lateMinutes':             totalLateMinutes,
+            'attendanceData.earlyLeaveMinutes':       totalELMinutes,
+            'payrollSummary.totalDeductions':         newTotalDeductions,
+            'payrollSummary.netPay':                  newNetPay,
+            attendanceRecalculatedAt:                 new Date()
+          }});
+
+          summary.processed++;
+        } catch (empErr) {
+          summary.errors.push({ employeeNumber: pr.employeeNumber, error: empErr.message });
+        }
+      }
+    }
+
+    res.json({ success: true, ...summary,
+      message: `Cleared and recalculated attendance deductions for ${summary.processed} record(s) across ${summary.periods} month(s).` });
   } catch (err) {
     logger.error('Recalculate attendance error', { error: err.message });
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
