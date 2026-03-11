@@ -1728,16 +1728,47 @@ router.get('/preview/:period', async (req, res) => {
     const records = await Payroll.find({ tenantId: TENANT_ID, period, calculationType: 'monthly' }).lean();
     if (records.length === 0) return res.status(404).json({ error: 'NO_PAYROLL', message: `No payroll data for ${period}` });
 
-    const flat   = records.map(flattenPayrollRecord);
-    const totals = flat.reduce((acc, r) => ({
-      grossSalary:  acc.grossSalary  + (r.grossSalary  || 0),
-      netSalary:    acc.netSalary    + (r.netSalary    || 0),
-      totalDeductions: acc.totalDeductions + (r.totalDeductions || 0),
-      paye:         acc.paye         + (r.paye         || 0),
-      pension:      acc.pension      + (r.pension      || 0)
-    }), { grossSalary: 0, netSalary: 0, totalDeductions: 0, paye: 0, pension: 0 });
+    // Build staff name lookup
+    const empNumbers = [...new Set(records.map(r => String(r.employeeNumber)))];
+    const staffDocs = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNumbers } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const nameMap = {};
+    staffDocs.forEach(s => { nameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
-    res.json({ success: true, period, count: flat.length, records: flat, totals });
+    const loans = await Loan.find({ tenantId: TENANT_ID, status: 'active', startPeriod: { $lte: period } }).lean();
+
+    const summary = { totalLateness: 0, totalEarlyLeave: 0, totalAbsence: 0, totalLoanDeductions: 0, totalBonuses: 0, totalOvertime: 0, staffWithDeductions: 0 };
+
+    const staff = records.map(r => {
+      const latenessAmt   = r.otherDeductions?.lateness?.amount   || 0;
+      const earlyLeaveAmt = r.otherDeductions?.earlyLeave?.amount || 0;
+      const absenceAmt    = r.otherDeductions?.absence?.amount    || 0;
+      const bonusAmt      = (r.salaryStructure?.bonuses || []).reduce((s, b) => s + (b.amount || 0), 0);
+      const overtimeAmt   = r.salaryStructure?.overtime?.totalAmount || 0;
+      const staffLoans    = loans.filter(l => String(l.employeeNumber) === String(r.employeeNumber));
+      const loanAmt       = staffLoans.reduce((s, l) => s + (l.monthlyInstalment || l.monthlyDeduction || 0), 0);
+
+      if (latenessAmt > 0 || earlyLeaveAmt > 0 || absenceAmt > 0) summary.staffWithDeductions++;
+      summary.totalLateness      += latenessAmt;
+      summary.totalEarlyLeave    += earlyLeaveAmt;
+      summary.totalAbsence       += absenceAmt;
+      summary.totalLoanDeductions += loanAmt;
+      summary.totalBonuses       += bonusAmt;
+      summary.totalOvertime      += overtimeAmt;
+
+      return {
+        employeeNumber: r.employeeNumber,
+        name:           nameMap[String(r.employeeNumber)] || r.employeeNumber,
+        department:     r.department || '',
+        deductions:     { lateness: latenessAmt, earlyLeave: earlyLeaveAmt, absence: absenceAmt, loans: loanAmt, total: latenessAmt + earlyLeaveAmt + absenceAmt + loanAmt },
+        additions:      { bonuses: bonusAmt, overtime: overtimeAmt, total: bonusAmt + overtimeAmt },
+        attendance:     { presentDays: r.attendanceData?.presentDays || 0, absentDays: r.attendanceData?.absentDays || 0, lateDays: r.attendanceData?.lateDays || 0 },
+        deductionBreakdown: r.deductionBreakdown || [],
+        bonuses: r.salaryStructure?.bonuses || [],
+        loans:   staffLoans.map(l => ({ type: l.type || 'loan', description: l.description || l.purpose || '', monthlyDeduction: l.monthlyInstalment || l.monthlyDeduction || 0, remainingBalance: l.remainingBalance || l.balance || 0 }))
+      };
+    });
+
+    res.json({ success: true, period, staffCount: records.length, summary, staff, activeLoans: loans.length });
   } catch (err) {
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
   }
@@ -2069,10 +2100,17 @@ router.get('/deductions/calendar/:period', async (req, res) => {
     if (employeeNumber) query.employeeNumber = employeeNumber;
 
     const payrollRecords = await Payroll.find(query).lean();
+
+    // Build staff name lookup
+    const empNums = [...new Set(payrollRecords.map(r => String(r.employeeNumber)))];
+    const staffForCal = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1, department: 1 }).lean();
+    const calNameMap = {};
+    staffForCal.forEach(s => { calNameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
+
     const calendarMap = {};
 
     for (const r of payrollRecords) {
-      const empName = r.employeeName || r.employeeNumber;
+      const empName = calNameMap[String(r.employeeNumber)] || r.employeeNumber;
       const empDept = r.department   || '';
 
       for (const event of (r.deductionBreakdown || [])) {
@@ -2113,7 +2151,7 @@ router.get('/deductions/calendar/:period', async (req, res) => {
         const abs = od.absence?.amount    || 0;
         return {
           employeeNumber:   r.employeeNumber,
-          name:             r.employeeName || r.employeeNumber,
+          name:             calNameMap[String(r.employeeNumber)] || r.employeeNumber,
           department:       r.department   || '',
           lateDays:         r.attendanceData?.lateDays   || od.lateness?.occurrences || 0,
           absentDays:       r.attendanceData?.absentDays || od.absence?.days         || 0,
