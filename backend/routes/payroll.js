@@ -1124,18 +1124,20 @@ router.get('/payslips/list/:period', async (req, res) => {
       });
 
       return {
+        payslipId:      `PS-${period.replace('-', '')}-${record.employeeNumber}`,
         employeeNumber: flat.employeeNumber,
         employeeName:   psNameMap[String(record.employeeNumber)] || flat.name || record.employeeNumber,
         period,
         department:     flat.department,
         position:       flat.position,
         status:         record.status,
+        emailSent:      record.payslip?.emailSent || false,
         earnings: {
-          baseSalary:  flat.baseSalary,
+          baseSalary:    flat.baseSalary,
           ...allowancesMap,
-          totalBonuses:    flat.totalBonuses || 0,
-          overtimePay:     flat.overtimePay  || 0,
-          grossSalary:     flat.grossSalary
+          totalBonuses:  flat.totalBonuses || 0,
+          overtimePay:   flat.overtimePay  || 0,
+          totalEarnings: flat.grossSalary
         },
         deductions: {
           paye:                flat.paye,
@@ -1148,7 +1150,7 @@ router.get('/payslips/list/:period', async (req, res) => {
           loanDeduction:       flat.loanDeduction,
           totalDeductions:     flat.totalDeductions
         },
-        netSalary:      flat.netSalary,
+        netPay:         flat.netSalary,
         attendanceSummary: {
           presentDays: flat.presentDays,
           absentDays:  flat.absentDays,
@@ -1169,11 +1171,63 @@ router.get('/payslips/list/:period', async (req, res) => {
 router.get('/payslips/:employeeNumber/:period', async (req, res) => {
   try {
     const { employeeNumber, period } = req.params;
-    const record = await Payroll.findOne({ tenantId: TENANT_ID, period, employeeNumber }).lean();
+    const record = await Payroll.findOne({
+      tenantId: TENANT_ID, period, employeeNumber,
+      status: { $in: ['generated', 'approved', 'paid'] }
+    }).lean();
     if (!record) return res.status(404).json({ error: 'NOT_FOUND', message: `No payslip for ${employeeNumber} in ${period}` });
 
     const flat = flattenPayrollRecord(record);
-    res.json({ success: true, payslip: flat });
+
+    const allowancesMap = {};
+    (record.salaryStructure?.allowances || []).forEach(a => {
+      if (a.name && a.amount) allowancesMap[a.name] = a.amount;
+    });
+
+    let payslip = {
+      payslipId:      `PS-${period.replace('-', '')}-${record.employeeNumber}`,
+      employeeNumber: flat.employeeNumber,
+      employeeName:   flat.name || record.employeeName || (record.firstName ? `${record.firstName || ''} ${record.lastName || ''}`.trim() : record.employeeNumber),
+      period,
+      department:     flat.department,
+      position:       flat.position,
+      earnings: {
+        baseSalary:    flat.baseSalary,
+        ...allowancesMap,
+        overtime:      flat.overtimePay  || 0,
+        bonuses:       flat.totalBonuses || 0,
+        totalEarnings: flat.grossSalary
+      },
+      deductions: {
+        paye:          flat.paye,
+        pension:       flat.pension,
+        nhf:           flat.nhf,
+        nhis:          flat.nhis,
+        lateness:      flat.latenessDeduction,
+        earlyLeave:    flat.earlyLeaveDeduction,
+        absence:       flat.absenceDeduction,
+        unpaidLeave:   flat.unpaidLeaveDeduction,
+        loans:         flat.loanDeduction,
+        advances:      flat.advanceDeduction,
+        other:         flat.otherDeductionsAmount,
+        totalDeductions: flat.totalDeductions
+      },
+      employerPension: flat.employerPension,
+      netPay:         flat.netSalary,
+      attendance: {
+        workingDays:  record.attendanceData?.standardWorkingDays || record.attendanceData?.workingDays || 0,
+        presentDays:  flat.presentDays,
+        lateDays:     flat.lateDays,
+        absentDays:   flat.absentDays
+      },
+      bankDetails:    record.payment?.bankDetails || {},
+      status:         record.status,
+      generatedAt:    record.lastCalculated || record.createdAt || new Date()
+    };
+
+    payslip = await enrichPayslipFromStaff(payslip, employeeNumber);
+
+    res.json({ success: true, payslip });
   } catch (err) {
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
   }

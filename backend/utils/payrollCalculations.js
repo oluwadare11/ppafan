@@ -625,13 +625,16 @@ const calculateGrossSalary = (
   const allowanceBreakdown = [];
 
   for (const a of staffAllowances) {
-    if (!a.isActive) continue;
+    if (a.isActive === false) continue; // only skip if explicitly disabled
     let amount = 0;
-    if (a.calculationType === 'fixed') {
+    const calcType = a.calculationType || 'fixed';
+    if (calcType === 'fixed') {
       amount = a.amount || 0;
-    } else if (a.calculationType === 'percentage') {
+    } else if (calcType === 'percentage') {
       const base = a.percentageOf === 'basic' ? baseSalary : 0;
       amount = (base * (a.percentageValue || 0)) / 100;
+    } else {
+      amount = a.amount || 0;
     }
     if (amount > 0) {
       totalAllowances += amount;
