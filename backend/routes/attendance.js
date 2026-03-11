@@ -2505,6 +2505,270 @@ router.post('/recalculate', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// LEAVE INSTRUCTIONS EMAIL
+// ═══════════════════════════════════════════════════════════════════════════
+
+router.post('/leave-instructions/send', async (req, res) => {
+  try {
+    const { employeeIds } = req.body;
+
+    const hrLeaveEmail = req.tenant?.settings?.hrLeaveEmail || '';
+    if (!hrLeaveEmail) {
+      return res.status(400).json({
+        error: 'NO_HR_EMAIL',
+        message: 'Please set the HR Leave Contact Email in Policy Setup before sending instructions.'
+      });
+    }
+
+    const TenantStaff = req.getTenantModel('Staff');
+    if (!TenantStaff) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+
+    const query = {
+      tenantId: req.tenantId,
+      status: 'active',
+      email: { $exists: true, $ne: '' },
+      employeeId: { $not: /^CONFIG_/ }
+    };
+    if (employeeIds?.length > 0) query.employeeId = { $in: employeeIds };
+
+    const staffList = await TenantStaff.find(query).lean();
+    if (staffList.length === 0) {
+      return res.status(400).json({ error: 'NO_ELIGIBLE_STAFF', message: 'No active staff with email addresses found.' });
+    }
+
+    let sent = 0;
+    const errors = [];
+
+    for (const staff of staffList) {
+      try {
+        await sendEmail(staff.email, 'leave_instructions', {
+          staffName: `${staff.firstName} ${staff.lastName || ''}`.trim(),
+          hrLeaveEmail
+        }, req.tenant);
+        sent++;
+      } catch (e) {
+        errors.push({ employeeId: staff.employeeId, error: e.message });
+      }
+    }
+
+    logger.info('Leave instructions sent', { tenantId: req.tenantId, sent, errors: errors.length });
+    res.json({
+      success: true,
+      message: `Leave instructions sent to ${sent} staff member${sent !== 1 ? 's' : ''}${errors.length ? `, ${errors.length} failed` : ''}`,
+      sent,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    logger.error('Error sending leave instructions', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'SEND_INSTRUCTIONS_FAILED', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LEAVE POLICIES SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+const DEFAULT_LEAVE_POLICIES = [
+  { leaveType: 'annual', name: 'Annual Leave', entitlementDays: 20, accrualMethod: 'upfront', carryoverPolicy: 'limited', carryoverMaxDays: 10, carryoverExpiry: '03-31', minNoticeDays: 5, maxConsecutiveDays: 14, genderRestriction: 'none', isPaid: true, requiresCertificate: false, proRatedForNewHires: true },
+  { leaveType: 'sick', name: 'Sick Leave', entitlementDays: 12, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 0, maxConsecutiveDays: 12, genderRestriction: 'none', isPaid: true, requiresCertificate: true, certificateRequiredAfterDays: 3, proRatedForNewHires: true },
+  { leaveType: 'maternity', name: 'Maternity Leave', entitlementDays: 84, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 30, maxConsecutiveDays: 84, genderRestriction: 'female', isPaid: true, requiresCertificate: true, certificateRequiredAfterDays: 0, proRatedForNewHires: false },
+  { leaveType: 'paternity', name: 'Paternity Leave', entitlementDays: 5, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 0, maxConsecutiveDays: 5, genderRestriction: 'male', isPaid: true, requiresCertificate: false, proRatedForNewHires: false },
+  { leaveType: 'casual', name: 'Casual / Emergency Leave', entitlementDays: 5, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 0, maxConsecutiveDays: 3, genderRestriction: 'none', isPaid: true, requiresCertificate: false, proRatedForNewHires: true },
+  { leaveType: 'compassionate', name: 'Compassionate / Bereavement Leave', entitlementDays: 5, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 0, maxConsecutiveDays: 5, genderRestriction: 'none', isPaid: true, requiresCertificate: false, proRatedForNewHires: false },
+  { leaveType: 'study', name: 'Study / Exam Leave', entitlementDays: 10, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 14, maxConsecutiveDays: 10, genderRestriction: 'none', isPaid: true, requiresCertificate: true, certificateRequiredAfterDays: 0, proRatedForNewHires: false },
+  { leaveType: 'unpaid', name: 'Unpaid Leave', entitlementDays: 0, accrualMethod: 'upfront', carryoverPolicy: 'none', carryoverMaxDays: 0, carryoverExpiry: null, minNoticeDays: 3, maxConsecutiveDays: 0, genderRestriction: 'none', isPaid: false, requiresCertificate: false, proRatedForNewHires: false }
+];
+
+router.get('/leave-policies', async (req, res) => {
+  try {
+    const TenantLeavePolicy = req.getTenantModel('LeavePolicy');
+    if (!TenantLeavePolicy) return res.json({ policies: [] });
+    const policies = await TenantLeavePolicy.find({ tenantId: req.tenantId }).sort({ leaveType: 1 }).lean();
+    res.json({ success: true, policies, count: policies.length });
+  } catch (err) {
+    logger.error('Error fetching leave policies', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'FETCH_FAILED', message: err.message });
+  }
+});
+
+router.post('/leave-policies/seed-defaults', async (req, res) => {
+  try {
+    const TenantLeavePolicy = req.getTenantModel('LeavePolicy');
+    if (!TenantLeavePolicy) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const seeded = [], skipped = [];
+    for (const policy of DEFAULT_LEAVE_POLICIES) {
+      const existing = await TenantLeavePolicy.findOne({ tenantId: req.tenantId, leaveType: policy.leaveType });
+      if (!existing) {
+        await TenantLeavePolicy.create({ ...policy, tenantId: req.tenantId, createdBy: req.user?.username || 'admin', updatedBy: req.user?.username || 'admin' });
+        seeded.push(policy.leaveType);
+      } else {
+        skipped.push(policy.leaveType);
+      }
+    }
+    logger.info('Leave policies seeded', { tenantId: req.tenantId, seeded, skipped });
+    res.json({ success: true, seeded, skipped, message: `${seeded.length} policies created, ${skipped.length} already existed` });
+  } catch (err) {
+    logger.error('Error seeding leave policies', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'SEED_FAILED', message: err.message });
+  }
+});
+
+router.post('/leave-policies', async (req, res) => {
+  try {
+    const TenantLeavePolicy = req.getTenantModel('LeavePolicy');
+    if (!TenantLeavePolicy) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const { leaveType, name, entitlementDays, accrualMethod, carryoverPolicy, carryoverMaxDays, carryoverExpiry, minNoticeDays, maxConsecutiveDays, genderRestriction, isPaid, requiresCertificate, certificateRequiredAfterDays, proRatedForNewHires } = req.body;
+    if (!leaveType || !name) return res.status(400).json({ error: 'MISSING_FIELDS', message: 'leaveType and name are required' });
+    const existing = await TenantLeavePolicy.findOne({ tenantId: req.tenantId, leaveType });
+    if (existing) return res.status(400).json({ error: 'POLICY_EXISTS', message: `A policy for ${leaveType} already exists. Use PUT to update it.` });
+    const policy = await TenantLeavePolicy.create({ tenantId: req.tenantId, leaveType, name, entitlementDays: entitlementDays || 0, accrualMethod: accrualMethod || 'upfront', carryoverPolicy: carryoverPolicy || 'none', carryoverMaxDays: carryoverMaxDays || 0, carryoverExpiry: carryoverExpiry || null, minNoticeDays: minNoticeDays || 0, maxConsecutiveDays: maxConsecutiveDays || 0, genderRestriction: genderRestriction || 'none', isPaid: isPaid !== false, requiresCertificate: requiresCertificate || false, certificateRequiredAfterDays: certificateRequiredAfterDays || 3, proRatedForNewHires: proRatedForNewHires !== false, createdBy: req.user?.username || 'admin', updatedBy: req.user?.username || 'admin' });
+    res.status(201).json({ success: true, policy });
+  } catch (err) {
+    logger.error('Error creating leave policy', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'CREATE_FAILED', message: err.message });
+  }
+});
+
+router.put('/leave-policies/:id', async (req, res) => {
+  try {
+    const TenantLeavePolicy = req.getTenantModel('LeavePolicy');
+    if (!TenantLeavePolicy) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const updateFields = { ...req.body, updatedBy: req.user?.username || 'admin' };
+    delete updateFields.tenantId; delete updateFields.leaveType; delete updateFields._id;
+    const policy = await TenantLeavePolicy.findOneAndUpdate({ _id: req.params.id, tenantId: req.tenantId }, updateFields, { new: true, runValidators: true });
+    if (!policy) return res.status(404).json({ error: 'NOT_FOUND', message: 'Policy not found' });
+    res.json({ success: true, policy });
+  } catch (err) {
+    logger.error('Error updating leave policy', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'UPDATE_FAILED', message: err.message });
+  }
+});
+
+router.delete('/leave-policies/:id', async (req, res) => {
+  try {
+    const TenantLeavePolicy = req.getTenantModel('LeavePolicy');
+    if (!TenantLeavePolicy) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const policy = await TenantLeavePolicy.findOneAndUpdate({ _id: req.params.id, tenantId: req.tenantId }, { isActive: false, updatedBy: req.user?.username || 'admin' }, { new: true });
+    if (!policy) return res.status(404).json({ error: 'NOT_FOUND', message: 'Policy not found' });
+    res.json({ success: true, message: 'Policy deactivated' });
+  } catch (err) {
+    logger.error('Error deactivating leave policy', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'DELETE_FAILED', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// LEAVE BALANCE SYSTEM
+// ═══════════════════════════════════════════════════════════════════════════
+
+async function rebuildEmployeeBalances(TenantLeaveBalance, TenantLeaveRequest, TenantLeavePolicy, tenantId, employeeId, year, staff) {
+  const yearStart = new Date(`${year}-01-01`);
+  const yearEnd   = new Date(`${year}-12-31T23:59:59.999Z`);
+  const policies  = await TenantLeavePolicy.find({ tenantId, isActive: true }).lean();
+  if (!policies.length) return [];
+  const requests  = await TenantLeaveRequest.find({ tenantId, employeeId, startDate: { $lte: yearEnd }, endDate: { $gte: yearStart } }).lean();
+  const results   = [];
+  for (const policy of policies) {
+    const leaveType = policy.leaveType;
+    const usedDays    = requests.filter(r => r.leaveType === leaveType && r.status === 'approved').reduce((s, r) => s + (r.totalDays || 0), 0);
+    const pendingDays = requests.filter(r => r.leaveType === leaveType && r.status === 'pending').reduce((s, r)  => s + (r.totalDays || 0), 0);
+    const existing = await TenantLeaveBalance.findOne({ tenantId, employeeId, year, leaveType }).lean();
+    const doc = await TenantLeaveBalance.findOneAndUpdate(
+      { tenantId, employeeId, year, leaveType },
+      { $set: { staffName: staff?.firstName ? `${staff.firstName} ${staff.lastName || ''}`.trim() : '', staffId: staff?._id, entitledDays: policy.entitlementDays || 0, usedDays, pendingDays, carriedOverDays: existing?.carriedOverDays || 0, adjustmentDays: existing?.adjustmentDays || 0, lastUpdated: new Date() } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    results.push(doc);
+  }
+  return results;
+}
+
+router.get('/leave-balances', async (req, res) => {
+  try {
+    const TenantLeaveBalance = req.getTenantModel('LeaveBalance');
+    if (!TenantLeaveBalance) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const employeeId = req.query.employeeId;
+    const query = { tenantId: req.tenantId, year };
+    if (employeeId) query.employeeId = employeeId;
+    const balances = await TenantLeaveBalance.find(query).sort({ employeeId: 1, leaveType: 1 }).lean();
+    const enriched = balances.map(b => ({ ...b, availableDays: (b.entitledDays || 0) + (b.carriedOverDays || 0) - (b.usedDays || 0) - (b.pendingDays || 0) + (b.adjustmentDays || 0) }));
+    res.json({ balances: enriched, year });
+  } catch (err) {
+    logger.error('Error fetching leave balances', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'FETCH_FAILED', message: err.message });
+  }
+});
+
+router.post('/leave-balances/recalculate', async (req, res) => {
+  try {
+    const TenantLeaveBalance = req.getTenantModel('LeaveBalance');
+    const TenantLeaveRequest = req.getTenantModel('LeaveRequest');
+    const TenantLeavePolicy  = req.getTenantModel('LeavePolicy');
+    const TenantStaff        = req.getTenantModel('Staff');
+    if (!TenantLeaveBalance || !TenantLeaveRequest || !TenantLeavePolicy || !TenantStaff) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const year = parseInt(req.body.year) || new Date().getFullYear();
+    const employeeIdFilter = req.body.employeeId;
+    const staffQuery = { tenantId: req.tenantId, status: 'active', employeeId: { $not: /^CONFIG_/ } };
+    if (employeeIdFilter) staffQuery.employeeId = employeeIdFilter;
+    const staffList = await TenantStaff.find(staffQuery).lean();
+    let totalUpdated = 0;
+    for (const staff of staffList) {
+      await rebuildEmployeeBalances(TenantLeaveBalance, TenantLeaveRequest, TenantLeavePolicy, req.tenantId, staff.employeeId, year, staff);
+      totalUpdated++;
+    }
+    res.json({ success: true, message: `Recalculated balances for ${totalUpdated} employee(s) for ${year}` });
+  } catch (err) {
+    logger.error('Error recalculating leave balances', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'RECALCULATE_FAILED', message: err.message });
+  }
+});
+
+router.put('/leave-balances/:id', async (req, res) => {
+  try {
+    const TenantLeaveBalance = req.getTenantModel('LeaveBalance');
+    if (!TenantLeaveBalance) return res.status(500).json({ error: 'MODEL_UNAVAILABLE' });
+    const { adjustmentDays, carriedOverDays } = req.body;
+    const updateFields = { lastUpdated: new Date() };
+    if (adjustmentDays  !== undefined) updateFields.adjustmentDays  = Number(adjustmentDays);
+    if (carriedOverDays !== undefined) updateFields.carriedOverDays = Number(carriedOverDays);
+    const balance = await TenantLeaveBalance.findOneAndUpdate({ _id: req.params.id, tenantId: req.tenantId }, { $set: updateFields }, { new: true });
+    if (!balance) return res.status(404).json({ error: 'NOT_FOUND', message: 'Balance record not found' });
+    const plain = balance.toObject();
+    plain.availableDays = (plain.entitledDays || 0) + (plain.carriedOverDays || 0) - (plain.usedDays || 0) - (plain.pendingDays || 0) + (plain.adjustmentDays || 0);
+    res.json({ success: true, balance: plain });
+  } catch (err) {
+    logger.error('Error adjusting leave balance', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'ADJUST_FAILED', message: err.message });
+  }
+});
+
+router.post('/leave-balances/carry-over', async (req, res) => {
+  try {
+    const fromYear = parseInt(req.body.fromYear) || new Date().getFullYear() - 1;
+    const toYear   = parseInt(req.body.toYear)   || new Date().getFullYear();
+    const { runYearEndCarryover } = require('../crons/attendance-cron');
+    const { carried, skipped } = await runYearEndCarryover(req.tenantId, fromYear, toYear);
+    res.json({ success: true, message: `Carried over ${carried} balance record(s) from ${fromYear} to ${toYear} (${skipped} skipped)` });
+  } catch (err) {
+    logger.error('Error running carryover', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'CARRYOVER_FAILED', message: err.message });
+  }
+});
+
+router.post('/leave-balances/expire-carryover', async (req, res) => {
+  try {
+    const year = parseInt(req.body.year) || new Date().getFullYear();
+    const { runCarryoverExpiry } = require('../crons/attendance-cron');
+    const { expired } = await runCarryoverExpiry(req.tenantId, year);
+    res.json({ success: true, message: `Expired carried-over days for ${expired} balance record(s) in ${year}` });
+  } catch (err) {
+    logger.error('Error expiring carryover', { tenantId: req.tenantId, error: err.message });
+    res.status(500).json({ error: 'EXPIRE_FAILED', message: err.message });
+  }
+});
+
 console.log('✅ COMPLETE ATTENDANCE ROUTES LOADED - Single-Tenant');
 console.log('   ✅ Manual holiday management only (no auto-detection)');
 console.log('   ✅ All original functionality preserved');

@@ -182,7 +182,7 @@ function SettingsContainer({
       {hasChanges && (
         <div className="flex items-center gap-2 px-4 py-2 bg-blue-50 border border-blue-200 rounded-lg text-sm text-blue-800">
           <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
-          You have unsaved changes — scroll down to save.
+          You have unsaved changes.
         </div>
       )}
 
@@ -239,18 +239,30 @@ function SettingsContainer({
           />
         )}
 
-        {/* Save/Reset Actions */}
-        {hasChanges && (
-          <div className="mt-8 pt-6 border-t border-gray-200">
-            <FormActions
-              onCancel={handleReset}
-              onSave={handleSave}
-              cancelLabel="Discard Changes"
-              saveLabel="Save Settings"
-              loading={isSaving}
-            />
+        {/* Save/Reset Actions — always visible */}
+        <div className="mt-8 pt-6 border-t border-gray-200">
+          <div className="flex items-center justify-end gap-3">
+            {hasChanges && (
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={isSaving}
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
+              >
+                Discard Changes
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={isSaving || !hasChanges}
+              className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
+            >
+              {isSaving && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+              Save Settings
+            </button>
           </div>
-        )}
+        </div>
       </div>
 
       {/* Settings info */}

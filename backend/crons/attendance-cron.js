@@ -316,7 +316,177 @@ async function initializeAttendanceCron() {
 // Initialize on module load
 initializeAttendanceCron();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LEAVE CARRYOVER FUNCTIONS
+// Called by attendance routes (/leave-balances/carry-over and /expire-carryover)
+// and scheduled automatically on Jan 1 / daily.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * runYearEndCarryover(tenantId, fromYear, toYear)
+ * Copies eligible unused leave days from fromYear into toYear for all active staff,
+ * honouring each policy's carryoverPolicy (none / limited / unlimited) and maxDays cap.
+ */
+async function runYearEndCarryover(tenantId, fromYear, toYear) {
+  const LeaveBalance = getModel('LeaveBalance');
+  const LeavePolicy  = getModel('LeavePolicy');
+  const Staff        = getModel('Staff');
+  if (!LeaveBalance || !LeavePolicy || !Staff) return { carried: 0, skipped: 0 };
+
+  const policies  = await LeavePolicy.find({ tenantId, isActive: true }).lean();
+  const staffList = await Staff.find({ tenantId, status: 'active', employeeId: { $not: /^CONFIG_/ } }).lean();
+  let carried = 0;
+  let skipped = 0;
+
+  for (const staff of staffList) {
+    for (const policy of policies) {
+      if (policy.carryoverPolicy === 'none') { skipped++; continue; }
+
+      const fromBal = await LeaveBalance.findOne({
+        tenantId,
+        employeeId: staff.employeeId,
+        year: fromYear,
+        leaveType: policy.leaveType
+      }).lean();
+
+      if (!fromBal) { skipped++; continue; }
+
+      const available = (fromBal.entitledDays    || 0) +
+                        (fromBal.carriedOverDays  || 0) -
+                        (fromBal.usedDays         || 0) -
+                        (fromBal.pendingDays      || 0) +
+                        (fromBal.adjustmentDays   || 0);
+      if (available <= 0) { skipped++; continue; }
+
+      const carryDays = policy.carryoverPolicy === 'limited'
+        ? Math.min(available, policy.carryoverMaxDays || 0)
+        : available; // unlimited
+
+      await LeaveBalance.findOneAndUpdate(
+        { tenantId, employeeId: staff.employeeId, year: toYear, leaveType: policy.leaveType },
+        {
+          $set: {
+            staffName:       fromBal.staffName,
+            staffId:         fromBal.staffId,
+            entitledDays:    policy.entitlementDays || 0,
+            carriedOverDays: carryDays,
+            usedDays:        0,
+            pendingDays:     0,
+            adjustmentDays:  0,
+            lastUpdated:     new Date()
+          }
+        },
+        { upsert: true, new: true }
+      );
+      carried++;
+    }
+  }
+
+  logger.info('Leave carryover complete', { tenantId, fromYear, toYear, carried, skipped });
+  return { carried, skipped };
+}
+
+/**
+ * runCarryoverExpiry(tenantId, year)
+ * Forfeits unused carried-over days where today has passed the policy's carryoverExpiry (MM-DD).
+ */
+async function runCarryoverExpiry(tenantId, year) {
+  const LeaveBalance = getModel('LeaveBalance');
+  const LeavePolicy  = getModel('LeavePolicy');
+  if (!LeaveBalance || !LeavePolicy) return { expired: 0 };
+
+  const today      = new Date();
+  const todayMMDD  = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  const policies = await LeavePolicy.find({
+    tenantId,
+    isActive: true,
+    carryoverPolicy: { $ne: 'none' },
+    carryoverExpiry: { $ne: null, $exists: true }
+  }).lean();
+
+  let expired = 0;
+
+  for (const policy of policies) {
+    if (!policy.carryoverExpiry || policy.carryoverExpiry !== todayMMDD) continue;
+
+    const balances = await LeaveBalance.find({
+      tenantId,
+      year,
+      leaveType: policy.leaveType,
+      carriedOverDays: { $gt: 0 }
+    }).lean();
+
+    for (const bal of balances) {
+      const totalUsed     = (bal.usedDays || 0) + (bal.pendingDays || 0);
+      const carryoverUsed    = Math.max(0, Math.min(bal.carriedOverDays, totalUsed - (bal.entitledDays || 0)));
+      const carryoverExpired = bal.carriedOverDays - carryoverUsed;
+
+      if (carryoverExpired <= 0) continue;
+
+      await LeaveBalance.findByIdAndUpdate(bal._id, {
+        $set: { carriedOverDays: carryoverUsed, lastUpdated: new Date() }
+      });
+      expired++;
+    }
+  }
+
+  if (expired > 0) {
+    logger.info('Leave carryover expiry applied', { tenantId, year, expired });
+  }
+  return { expired };
+}
+
+// ── Jan 1 at 02:30 AM — auto year-end carryover ──────────────────────────────
+cron.schedule('30 2 1 1 *', async () => {
+  const now      = new Date();
+  const toYear   = now.getFullYear();
+  const fromYear = toYear - 1;
+  logger.info('Year-end leave carryover cron starting', { fromYear, toYear });
+  try {
+    const Tenant = require('../models/Tenant');
+    const tenants = await Tenant.find({ status: 'active' }).lean();
+    let totalCarried = 0;
+    for (const tenant of tenants) {
+      try {
+        const { carried } = await runYearEndCarryover(tenant.tenantId, fromYear, toYear);
+        totalCarried += carried;
+      } catch (err) {
+        logger.warn('Carryover failed for tenant', { tenantId: tenant.tenantId, error: err.message });
+      }
+    }
+    logger.info('Year-end leave carryover cron complete', { fromYear, toYear, totalCarried });
+  } catch (err) {
+    logger.error('Year-end carryover cron error', { error: err.message });
+  }
+}, { timezone: 'Africa/Lagos' });
+
+// ── Daily at 03:00 AM — expire carried-over days past their policy expiry date ─
+cron.schedule('0 3 * * *', async () => {
+  const year = new Date().getFullYear();
+  try {
+    const Tenant = require('../models/Tenant');
+    const tenants = await Tenant.find({ status: 'active' }).lean();
+    let totalExpired = 0;
+    for (const tenant of tenants) {
+      try {
+        const { expired } = await runCarryoverExpiry(tenant.tenantId, year);
+        totalExpired += expired;
+      } catch (err) {
+        logger.warn('Carryover expiry failed for tenant', { tenantId: tenant.tenantId, error: err.message });
+      }
+    }
+    if (totalExpired > 0) {
+      logger.info('Leave carryover expiry cron complete', { year, totalExpired });
+    }
+  } catch (err) {
+    logger.error('Carryover expiry cron error', { error: err.message });
+  }
+}, { timezone: 'Africa/Lagos' });
+
 module.exports = {
   createAbsentRecordsForAllTenants,
-  createAbsentRecordsForTenant
+  createAbsentRecordsForTenant,
+  runYearEndCarryover,
+  runCarryoverExpiry
 };

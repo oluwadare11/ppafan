@@ -1,5 +1,6 @@
-// SalaryComponents.jsx - Salary components management
-// Manage allowances, bonuses, and other salary components
+// SalaryComponents.jsx - Salary allowances management
+// Recurring monthly allowances assigned per staff (Housing, Transport, Meal, etc.)
+// One-time bonuses (13th month, performance, BIK) are handled in the Adjustments step.
 
 import React, { useState, useCallback } from 'react';
 import {
@@ -24,12 +25,9 @@ import {
   Tip
 } from '../shared';
 
-// Component type options
-const COMPONENT_TYPES = [
-  { value: 'allowance', label: 'Allowance' },
-  { value: 'bonus', label: 'Bonus' },
-  { value: 'benefit', label: 'Benefit' }
-];
+// Salary components are allowances only — recurring monthly items assigned per staff.
+// 13th month, performance bonus, BIK etc. are one-time bonuses added during
+// the Adjustments step of payroll processing, not recurring components.
 
 const CALCULATION_TYPES = [
   { value: 'fixed', label: 'Fixed Amount', icon: DollarSign },
@@ -116,7 +114,7 @@ function SalaryComponents({ components = [], onChange }) {
             Salary Components
           </h3>
           <p className="text-sm text-gray-500">
-            Define allowances, bonuses, and other salary components
+            Recurring monthly allowances assigned per staff member
           </p>
         </div>
 
@@ -131,8 +129,10 @@ function SalaryComponents({ components = [], onChange }) {
       </div>
 
       <Tip>
-        Components marked as "Pensionable" are included in pension calculations.
-        "Taxable" components are subject to PAYE deductions.
+        These are <strong>recurring monthly allowances</strong> (e.g. Housing, Transport, Meal, Utility).
+        For one-time or annual payments like <strong>13th Month, Performance Bonus, or Leave Allowance</strong>,
+        use the Adjustments step when processing payroll — they are handled separately so they
+        don't inflate monthly pension calculations and receive correct PAYE treatment.
       </Tip>
 
       {/* Add/Edit Form */}
@@ -164,17 +164,7 @@ function SalaryComponents({ components = [], onChange }) {
               />
             </FormField>
 
-            <FormField label="Type">
-              <select
-                value={editingComponent.type}
-                onChange={(e) => updateField('type', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500"
-              >
-                {COMPONENT_TYPES.map(opt => (
-                  <option key={opt.value} value={opt.value}>{opt.label}</option>
-                ))}
-              </select>
-            </FormField>
+            {/* Type is always 'allowance' — bonuses are handled in payroll Adjustments step */}
 
             <FormField label="Calculation Type">
               <select
@@ -301,20 +291,8 @@ function SalaryComponents({ components = [], onChange }) {
               className="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 hover:border-gray-300 transition-colors"
             >
               <div className="flex items-center gap-4">
-                <div className={`p-2 rounded-lg ${
-                  component.type === 'bonus'
-                    ? 'bg-green-100/30'
-                    : component.type === 'benefit'
-                    ? 'bg-purple-100/30'
-                    : 'bg-blue-100/30'
-                }`}>
-                  <DollarSign className={`w-5 h-5 ${
-                    component.type === 'bonus'
-                      ? 'text-green-600'
-                      : component.type === 'benefit'
-                      ? 'text-purple-600'
-                      : 'text-blue-600'
-                  }`} />
+                <div className="p-2 rounded-lg bg-blue-100/30">
+                  <DollarSign className="w-5 h-5 text-blue-600" />
                 </div>
 
                 <div>

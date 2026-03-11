@@ -90,8 +90,26 @@ export function FormDivider({ label }) {
   return <div className="border-t border-gray-200 my-4" />;
 }
 
-export function FormActions({ children, className = '' }) {
-  return <div className={`flex items-center justify-end gap-3 pt-4 border-t border-gray-200 ${className}`}>{children}</div>;
+export function FormActions({ children, className = '', onSave, onCancel, saveLabel = 'Save', cancelLabel = 'Cancel', loading = false }) {
+  return (
+    <div className={`flex items-center justify-end gap-3 pt-4 border-t border-gray-200 ${className}`}>
+      {children || (onSave && (
+        <>
+          {onCancel && (
+            <button type="button" onClick={onCancel} disabled={loading}
+              className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors">
+              {cancelLabel}
+            </button>
+          )}
+          <button type="button" onClick={onSave} disabled={loading}
+            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center gap-2">
+            {loading && <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />}
+            {saveLabel}
+          </button>
+        </>
+      ))}
+    </div>
+  );
 }
 
 export function InlineEditField({ value, onSave, type = 'text', className = '' }) {

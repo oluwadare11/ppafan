@@ -32,6 +32,8 @@ const {
   calculateHistoricalPayroll
 } = require('../crons/payroll-cron');
 
+const { sendEmail } = require('../utils/email');
+
 const TENANT_ID = 'ppafan';
 
 // ============================================
@@ -2170,6 +2172,604 @@ router.post('/deductions/recalculate-attendance', async (req, res) => {
     res.json({ success: true, processed, periods });
   } catch (err) {
     logger.error('Recalculate attendance error', { error: err.message });
+    res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PAYSLIP HELPERS
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Enrich a payslip object with accurate name/department/position from Staff collection
+async function enrichPayslipFromStaff(payslipObj, employeeNumber) {
+  if (!Staff || !employeeNumber) return payslipObj;
+  try {
+    let staff = await Staff.findOne({ employeeId: String(employeeNumber) }).lean();
+    if (!staff) {
+      const padded = String(employeeNumber).padStart(4, '0');
+      if (padded !== String(employeeNumber)) {
+        staff = await Staff.findOne({ employeeId: padded }).lean();
+      }
+    }
+    if (!staff) return payslipObj;
+    const staffName = `${staff.firstName || ''} ${staff.lastName || ''}`.trim();
+    return {
+      ...payslipObj,
+      employeeName: staffName || payslipObj.employeeName || payslipObj.name || '',
+      department:   staff.department || payslipObj.department || '',
+      position:     staff.position   || staff.jobTitle || payslipObj.position || ''
+    };
+  } catch (_) {
+    return payslipObj;
+  }
+}
+
+// Build fully branded HTML payslip for email delivery
+function buildPayslipEmailHtml(data) {
+  const fmt     = (n) => `₦${Math.round(n || 0).toLocaleString()}`;
+  const fmtMins = (m) => m > 0 ? ` (${m} min)` : '';
+
+  // Mask bank account — show only last 4 digits
+  const bank = data.bankDetails || {};
+  const acct = bank.accountNumber ? `****${String(bank.accountNumber).slice(-4)}` : null;
+
+  // Allowances rows — itemised
+  const allowanceRows = (data.allowances || [])
+    .filter(a => a.amount > 0 && a.isActive !== false)
+    .map(a => `<tr>
+      <td style="padding:5px 0 5px 16px;color:#6b7280;font-size:13px;">${a.name || a.code}</td>
+      <td style="padding:5px 0;text-align:right;color:#374151;font-size:13px;">${fmt(a.amount)}</td>
+    </tr>`).join('');
+
+  const row = (label, value, color = '#374151') =>
+    `<tr>
+      <td style="padding:5px 0;color:#6b7280;font-size:13px;">${label}</td>
+      <td style="padding:5px 0;text-align:right;color:${color};font-size:13px;font-weight:600;">${fmt(value)}</td>
+    </tr>`;
+
+  return `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="supported-color-schemes" content="light">
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;" data-ogsc>
+
+<div style="max-width:620px;margin:24px auto;background:#ffffff;border-radius:12px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08);" data-ogsc>
+
+  <!-- HEADER -->
+  <div style="background:#1e3a5f;padding:28px 28px 20px;position:relative;" data-ogsc>
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="vertical-align:top;">
+          <p style="margin:0;font-size:11px;color:#ffffff !important;-webkit-text-fill-color:#ffffff;letter-spacing:1.5px;text-transform:uppercase;opacity:0.75;">Pay Slip</p>
+          <h1 style="margin:4px 0 0;font-size:20px;font-weight:800;color:#ffffff !important;-webkit-text-fill-color:#ffffff;">${data.tenantName}</h1>
+          <p style="margin:6px 0 0;font-size:13px;color:#ffffff !important;-webkit-text-fill-color:#ffffff;opacity:0.85;">${data.period}</p>
+        </td>
+        <td style="text-align:right;vertical-align:top;">
+          <p style="margin:0;font-size:10px;color:#ffffff !important;-webkit-text-fill-color:#ffffff;opacity:0.6;">Ref: ${data.payslipId || ''}</p>
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <!-- EMPLOYEE INFO -->
+  <div style="background:#f8fafc;border-bottom:1px solid #e2e8f0;padding:14px 28px;">
+    <table style="width:100%;border-collapse:collapse;">
+      <tr>
+        <td style="vertical-align:top;width:60%;">
+          <p style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">${data.staffName}</p>
+          ${data.position ? `<p style="margin:3px 0 0;font-size:12px;color:#64748b;">${data.position}${data.department ? ` &nbsp;·&nbsp; ${data.department}` : ''}</p>` : ''}
+          <p style="margin:3px 0 0;font-size:12px;color:#94a3b8;">ID: ${data.employeeNumber || ''}</p>
+        </td>
+        <td style="text-align:right;vertical-align:top;">
+          ${acct ? `<p style="margin:0;font-size:12px;color:#64748b;">${bank.bankName || 'Bank'}</p>
+          <p style="margin:3px 0 0;font-size:12px;font-weight:600;color:#0f172a;">${acct}</p>
+          ${bank.accountName ? `<p style="margin:2px 0 0;font-size:11px;color:#94a3b8;">${bank.accountName}</p>` : ''}` : ''}
+        </td>
+      </tr>
+    </table>
+  </div>
+
+  <div style="padding:20px 28px;">
+
+    <!-- EARNINGS -->
+    <div style="margin-bottom:20px;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #d1fae5;padding-bottom:6px;">Earnings</p>
+      <table style="width:100%;border-collapse:collapse;">
+        ${row('Base Salary', data.baseSalary, '#065f46')}
+        ${allowanceRows}
+        ${data.overtimePay > 0 ? row('Overtime Pay', data.overtimePay) : ''}
+        ${data.totalBonuses > 0 ? row('Bonus', data.totalBonuses) : ''}
+        <tr style="border-top:2px solid #d1fae5;">
+          <td style="padding:8px 0;font-size:14px;font-weight:700;color:#065f46;">Gross Pay</td>
+          <td style="padding:8px 0;text-align:right;font-size:14px;font-weight:700;color:#065f46;">${fmt(data.grossSalary)}</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- DEDUCTIONS -->
+    <div style="margin-bottom:20px;">
+      <p style="margin:0 0 10px;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:1px;border-bottom:2px solid #fecaca;padding-bottom:6px;">Deductions</p>
+      <table style="width:100%;border-collapse:collapse;">
+        ${data.paye > 0 ? row('PAYE Tax', data.paye, '#dc2626') : ''}
+        ${data.pension > 0 ? `<tr>
+          <td style="padding:5px 0;color:#6b7280;font-size:13px;">Pension (Employee 8%)</td>
+          <td style="padding:5px 0;text-align:right;color:#dc2626;font-size:13px;font-weight:600;">${fmt(data.pension)}</td>
+        </tr>` : ''}
+        ${data.nhf > 0 ? row('NHF (2.5%)', data.nhf, '#dc2626') : ''}
+        ${data.nhis > 0 ? row('NHIS', data.nhis, '#dc2626') : ''}
+        ${data.latenessDeduction > 0 ? `<tr>
+          <td style="padding:5px 0;color:#6b7280;font-size:13px;">Lateness${fmtMins(data.lateMinutes)} — ${data.lateDays || 0} occurrence${data.lateDays !== 1 ? 's' : ''}</td>
+          <td style="padding:5px 0;text-align:right;color:#dc2626;font-size:13px;font-weight:600;">${fmt(data.latenessDeduction)}</td>
+        </tr>` : ''}
+        ${data.earlyLeaveDeduction > 0 ? `<tr>
+          <td style="padding:5px 0;color:#6b7280;font-size:13px;">Early Leave${fmtMins(data.earlyLeaveMinutes)}</td>
+          <td style="padding:5px 0;text-align:right;color:#dc2626;font-size:13px;font-weight:600;">${fmt(data.earlyLeaveDeduction)}</td>
+        </tr>` : ''}
+        ${data.absenceDeduction > 0 ? row(`Absence (${data.absentDays || 0} day${data.absentDays !== 1 ? 's' : ''})`, data.absenceDeduction, '#dc2626') : ''}
+        ${data.loanDeduction > 0 ? row('Loan Repayment', data.loanDeduction, '#dc2626') : ''}
+        ${data.unpaidLeaveDeduction > 0 ? row(`Unpaid Leave (${data.unpaidLeaveDays} day${data.unpaidLeaveDays !== 1 ? 's' : ''})`, data.unpaidLeaveDeduction, '#dc2626') : ''}
+        <tr style="border-top:2px solid #fecaca;">
+          <td style="padding:8px 0;font-size:14px;font-weight:700;color:#991b1b;">Total Deductions</td>
+          <td style="padding:8px 0;text-align:right;font-size:14px;font-weight:700;color:#991b1b;">${fmt(data.totalDeductions)}</td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- NET PAY -->
+    <div style="background:#0f172a;border-radius:10px;padding:20px 24px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;" data-ogsc>
+      <div>
+        <p style="margin:0;font-size:11px;color:#ffffff !important;-webkit-text-fill-color:#ffffff;opacity:0.75;letter-spacing:1px;text-transform:uppercase;">Net Pay &mdash; ${data.period}</p>
+        <p style="margin:4px 0 0;font-size:11px;color:#ffffff !important;-webkit-text-fill-color:#ffffff;opacity:0.65;">${fmt(data.grossSalary)} gross &minus; ${fmt(data.totalDeductions)} deductions</p>
+      </div>
+      <p style="margin:0;font-size:28px;font-weight:900;color:#4ade80 !important;-webkit-text-fill-color:#4ade80;letter-spacing:-1px;">${fmt(data.netSalary)}</p>
+    </div>
+
+    <!-- FOOTER -->
+    <p style="margin:0 0 4px;font-size:11px;color:#94a3b8;text-align:center;">
+      This is a computer-generated payslip and requires no signature.
+    </p>
+    <p style="margin:0;font-size:11px;color:#cbd5e1;text-align:center;">
+      ${data.payslipId || ''} &nbsp;·&nbsp; ${data.period} &nbsp;·&nbsp; ${data.tenantName}
+    </p>
+
+    ${data.hrLeaveEmail ? `
+    <div style="margin-top:16px;padding:14px 16px;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;">
+      <p style="margin:0 0 6px;font-size:12px;font-weight:600;color:#065f46;">Leave Requests</p>
+      <p style="margin:0;font-size:12px;color:#6b7280;">Email <a href="mailto:${data.hrLeaveEmail}?subject=LEAVE REQUEST" style="color:#059669;font-weight:600;">${data.hrLeaveEmail}</a> with your leave type, dates, and reason.</p>
+    </div>` : ''}
+
+  </div>
+</div>
+
+</body>
+</html>
+  `;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// GET /working-schedule — dynamic working days for a given month/year
+// ═══════════════════════════════════════════════════════════════════════════
+router.get('/working-schedule', async (req, res) => {
+  try {
+    const { month, year } = req.query;
+
+    const settings = await PayrollSettings.findOne({ tenantId: TENANT_ID, isActive: true });
+
+    const now          = getLagosDate();
+    const targetYear   = year  ? parseInt(year)  : now.getFullYear();
+    const targetMonth  = month ? parseInt(month) : (now.getMonth() + 1);
+
+    const dynamicWorkingDays = await calcWorkingDaysFromEngine(targetYear, targetMonth);
+
+    res.json({
+      days:         dynamicWorkingDays,
+      standardDays: settings?.workingDaysPerMonth || 26,
+      hours:        settings?.workingHoursPerDay  || 8,
+      month:        `${targetYear}-${String(targetMonth).padStart(2, '0')}`,
+      isDynamic:    true,
+      calculation:  `Mon-Sat excluding holidays for ${targetYear}/${targetMonth}`
+    });
+  } catch (err) {
+    logger.error('Error fetching working schedule', { tenantId: TENANT_ID, error: err.message });
+    res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /generate-report — JSON payroll report for a period
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/generate-report', async (req, res) => {
+  try {
+    const { period, startDate, endDate } = req.body;
+
+    let reportStartDate, reportEndDate, periodKey, dynamicWorkingDays;
+    const today = getLagosDate().toISOString().split('T')[0];
+
+    if (period) {
+      const parsed = parsePeriodString(period);
+      if (!parsed) return res.status(400).json({ error: 'INVALID_PERIOD', message: 'Period must be in YYYY-MM format' });
+
+      reportStartDate = `${parsed.year}-${String(parsed.month).padStart(2, '0')}-01`;
+      const lastDay   = new Date(parsed.year, parsed.month, 0).getDate();
+      const monthEnd  = `${parsed.year}-${String(parsed.month).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+      reportEndDate   = today <= monthEnd ? today : monthEnd;
+      periodKey       = `${parsed.year}-${String(parsed.month).padStart(2, '0')}`;
+      dynamicWorkingDays = await calcWorkingDaysFromEngine(parsed.year, parsed.month);
+    } else if (startDate && endDate) {
+      reportStartDate    = startDate;
+      reportEndDate      = endDate <= today ? endDate : today;
+      periodKey          = startDate.substring(0, 7);
+      const [y, m]       = startDate.split('-').map(Number);
+      dynamicWorkingDays = await calcWorkingDaysFromEngine(y, m);
+    } else {
+      return res.status(400).json({ error: 'MISSING_PARAMETERS', message: 'Either period (YYYY-MM) or date range is required' });
+    }
+
+    const preCalculatedData = await Payroll.find({
+      isPreCalculated: true,
+      period: periodKey,
+      calculationType: { $in: ['monthly', 'historical'] }
+    }).sort({ employeeNumber: 1 });
+
+    if (preCalculatedData.length === 0) {
+      return res.status(404).json({
+        success: false,
+        available: false,
+        error: 'NO_DATA_FOUND',
+        message: 'No payroll data available for this period',
+        hint: 'Try a different period or run historical calculation.'
+      });
+    }
+
+    let payrollData = [];
+    const totals = { totalStaff: 0, totalBaseSalary: 0, totalAllowances: 0, totalGrossPay: 0, totalDeductions: 0, totalTax: 0, totalPension: 0, totalNetPay: 0 };
+
+    for (const record of preCalculatedData) {
+      const flat    = flattenPayrollRecord(record);
+      const grossPay = flat.grossSalary;
+
+      let netPay;
+      if (record.isPartialPeriod && !record.isMonthComplete && record.actualWorkingDays > 0) {
+        const factor = record.actualWorkingDays / dynamicWorkingDays;
+        netPay = Math.max(0, grossPay * factor - flat.totalDeductions);
+      } else {
+        netPay = flat.netSalary;
+      }
+
+      payrollData.push({
+        employeeNumber: flat.employeeNumber,
+        employeeName:   flat.name,
+        employeeId:     flat.employeeNumber,
+        position:       flat.position,
+        department:     flat.department,
+        baseSalary:     flat.baseSalary,
+        totalAllowances: flat.totalAllowances,
+        grossPay,
+        totalDeductions: flat.totalDeductions,
+        taxAmount:       flat.paye,
+        pensionAmount:   flat.pension,
+        nhf:             flat.nhf,
+        nhis:            flat.nhis,
+        netPay,
+        bankDetails:     record.bankDetails || { bankName: '', accountNumber: '', accountName: '' },
+        presentDays:     flat.presentDays,
+        absentDays:      flat.absentDays,
+        actualWorkingDays:   record.actualWorkingDays || 0,
+        standardWorkingDays: dynamicWorkingDays,
+        isPartialPeriod:  record.isPartialPeriod  || false,
+        isMonthComplete:  record.isMonthComplete   || false
+      });
+
+      totals.totalBaseSalary  += flat.baseSalary;
+      totals.totalAllowances  += flat.totalAllowances;
+      totals.totalGrossPay    += grossPay;
+      totals.totalDeductions  += flat.totalDeductions;
+      totals.totalTax         += flat.paye;
+      totals.totalPension     += flat.pension;
+      totals.totalNetPay      += netPay;
+    }
+    totals.totalStaff = payrollData.length;
+
+    const isPartialPeriod = payrollData.some(p => p.isPartialPeriod && !p.isMonthComplete);
+    const avgWorkingDays  = payrollData.length > 0
+      ? payrollData.reduce((s, p) => s + (p.actualWorkingDays || 0), 0) / payrollData.length
+      : dynamicWorkingDays;
+
+    res.json({
+      success:        true,
+      available:      true,
+      period:         period || `${reportStartDate} to ${reportEndDate}`,
+      startDate:      reportStartDate,
+      endDate:        reportEndDate,
+      actualWorkingDays:   Math.round(avgWorkingDays),
+      standardWorkingDays: dynamicWorkingDays,
+      dynamicWorkingDays,
+      isPartialPeriod,
+      ...totals,
+      payrollData,
+      dataSource:    'pre-calculated',
+      lastCalculated: preCalculatedData[0]?.lastCalculated || new Date(),
+      prorationNote:  isPartialPeriod
+        ? `Period is incomplete. Net pay prorated based on ${Math.round(avgWorkingDays)} of ${dynamicWorkingDays} working days.`
+        : null
+    });
+  } catch (err) {
+    logger.error('Error generating payroll report', { tenantId: TENANT_ID, error: err.message });
+    res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /payslips/generate — generate payslip documents for a period
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/payslips/generate', async (req, res) => {
+  try {
+    const { period, employeeNumbers } = req.body;
+
+    if (!period) return res.status(400).json({ error: 'MISSING_PERIOD', message: 'Period is required' });
+
+    const query = { period, status: { $in: ['generated', 'approved', 'paid'] } };
+    if (employeeNumbers?.length > 0) query.employeeNumber = { $in: employeeNumbers };
+
+    const payrollRecords = await Payroll.find(query).lean();
+
+    if (payrollRecords.length === 0) {
+      return res.status(400).json({ error: 'NO_PAYROLL_FOUND', message: `No payroll records found for ${period}. Payroll must be generated first.` });
+    }
+
+    const payslips = await Promise.all(payrollRecords.map(async record => {
+      const flat = flattenPayrollRecord(record);
+
+      const allowancesMap = {};
+      (record.salaryStructure?.allowances || []).forEach(a => {
+        if (a.name && a.amount) allowancesMap[a.name] = a.amount;
+      });
+
+      const base = {
+        employeeNumber: flat.employeeNumber,
+        employeeName:   flat.name,
+        period,
+        department:     flat.department,
+        position:       flat.position,
+        earnings: {
+          baseSalary: flat.baseSalary,
+          ...allowancesMap,
+          overtime:   flat.overtimePay  || 0,
+          bonuses:    flat.totalBonuses || 0,
+          totalEarnings: flat.grossSalary
+        },
+        deductions: {
+          paye:           flat.paye,
+          pension:        flat.pension,
+          nhf:            flat.nhf,
+          nhis:           flat.nhis,
+          lateness:       flat.latenessDeduction,
+          earlyLeave:     flat.earlyLeaveDeduction,
+          absence:        flat.absenceDeduction,
+          unpaidLeave:    flat.unpaidLeaveDeduction,
+          loans:          flat.loanDeduction,
+          advances:       flat.advanceDeduction,
+          other:          flat.otherDeductionsAmount,
+          totalDeductions: flat.totalDeductions
+        },
+        employerPension: flat.employerPension,
+        netPay:          flat.netSalary,
+        attendance: {
+          workingDays: record.attendanceData?.workingDays || 0,
+          presentDays: flat.presentDays,
+          lateDays:    flat.lateDays,
+          absentDays:  flat.absentDays
+        },
+        bankDetails:  record.bankDetails,
+        generatedAt:  new Date(),
+        payslipId:    `PS-${period.replace('-', '')}-${flat.employeeNumber}`
+      };
+      return enrichPayslipFromStaff(base, flat.employeeNumber);
+    }));
+
+    // Mark payslips as generated
+    await Payroll.updateMany(query, {
+      $set: {
+        payslipGenerated:    true,
+        payslipGeneratedAt:  new Date(),
+        payslipGeneratedBy:  req.user?.username || 'system'
+      }
+    });
+
+    logger.info('Payslips generated', { tenantId: TENANT_ID, period, count: payslips.length, generatedBy: req.user?.username });
+
+    res.json({
+      success: true,
+      message: `Generated ${payslips.length} payslips for ${period}`,
+      period,
+      count:   payslips.length,
+      payslips
+    });
+  } catch (err) {
+    logger.error('Error generating payslips', { tenantId: TENANT_ID, error: err.message });
+    res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /payslips/email — send HTML payslips to staff email addresses
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/payslips/email', async (req, res) => {
+  try {
+    const { period, employeeNumbers } = req.body;
+    if (!period) return res.status(400).json({ error: 'MISSING_PERIOD', message: 'Period is required' });
+
+    const query = { period, status: { $in: ['generated', 'approved', 'paid'] } };
+    if (employeeNumbers?.length > 0) query.employeeNumber = { $in: employeeNumbers };
+
+    const payrollRecords = await Payroll.find(query).lean();
+    if (payrollRecords.length === 0) {
+      return res.status(400).json({ error: 'NO_RECORDS', message: 'No payroll records found for this period' });
+    }
+
+    const empNumbers = payrollRecords.map(r => r.employeeNumber);
+    const staffList  = await Staff.find({ employeeId: { $in: empNumbers } }).lean();
+    const staffMap   = new Map();
+    staffList.forEach(s => staffMap.set(s.employeeId, s));
+
+    const [year, month] = period.split('-');
+    const periodLabel   = new Date(year, parseInt(month) - 1, 1).toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+    const tenantName    = req.tenant?.businessInfo?.businessName || req.tenant?.name || 'PPAfan';
+
+    let sent = 0, skipped = 0;
+    const errors = [];
+
+    for (const record of payrollRecords) {
+      const flat  = flattenPayrollRecord(record);
+      const staff = staffMap.get(record.employeeNumber);
+      const email = staff?.email;
+
+      if (!email) { skipped++; continue; }
+
+      try {
+        const payslipHtml = buildPayslipEmailHtml({
+          staffName:      `${staff?.firstName || ''} ${staff?.lastName || ''}`.trim() || flat.name,
+          employeeNumber: record.employeeNumber,
+          department:     flat.department || staff?.department || '',
+          position:       flat.position   || staff?.position   || '',
+          period:         periodLabel,
+          payslipId:      `PS-${period.replace('-', '')}-${record.employeeNumber}`,
+          tenantName,
+          tenantLogo:     req.tenant?.logo || req.tenant?.settings?.logo || '',
+          baseSalary:     flat.baseSalary,
+          allowances:     record.salaryStructure?.allowances || [],
+          overtimePay:    flat.overtimePay  || 0,
+          totalBonuses:   flat.totalBonuses || 0,
+          grossSalary:    flat.grossSalary,
+          paye:           flat.paye,
+          pension:        flat.pension,
+          employerPension: record.statutoryDeductions?.pension?.employerContribution || 0,
+          nhf:            flat.nhf,
+          nhis:           flat.nhis,
+          latenessDeduction:   flat.latenessDeduction,
+          lateMinutes:         record.attendanceData?.lateMinutes || 0,
+          lateDays:            record.attendanceData?.lateDays    || flat.lateDays || 0,
+          earlyLeaveDeduction: flat.earlyLeaveDeduction,
+          earlyLeaveMinutes:   record.attendanceData?.earlyLeaveMinutes || 0,
+          absenceDeduction:    flat.absenceDeduction,
+          loanDeduction:       flat.loanDeduction,
+          unpaidLeaveDeduction: flat.unpaidLeaveDeduction || 0,
+          unpaidLeaveDays:      flat.unpaidLeaveDays      || 0,
+          totalDeductions:      flat.totalDeductions,
+          netSalary:            flat.netSalary,
+          workingDays:          record.attendanceData?.workingDays || 0,
+          presentDays:          flat.presentDays,
+          absentDays:           flat.absentDays,
+          bankDetails:          record.payment?.bankDetails || record.bankDetails || staff?.bankDetails || {},
+          hrLeaveEmail:         req.tenant?.settings?.hrLeaveEmail || ''
+        });
+
+        await sendEmail(email, 'payslip', {
+          subject: `Your Payslip - ${periodLabel} | ${tenantName}`,
+          html:    payslipHtml,
+          text:    `Your payslip for ${periodLabel} is ready. Net Pay: ₦${flat.netSalary?.toLocaleString()}`
+        }, req.tenant);
+
+        sent++;
+      } catch (emailErr) {
+        errors.push({ employeeNumber: record.employeeNumber, error: emailErr.message });
+      }
+    }
+
+    logger.info('Payslip emails sent', { tenantId: TENANT_ID, period, sent, skipped, errors: errors.length });
+
+    res.json({
+      success: true,
+      message: `Sent ${sent} payslip email${sent !== 1 ? 's' : ''}${skipped ? `, ${skipped} skipped (no email)` : ''}`,
+      sent,
+      skipped,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (err) {
+    logger.error('Error sending payslip emails', { tenantId: TENANT_ID, error: err.message });
+    res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// POST /payslips/email/resend — resend payslip to a single employee
+// ═══════════════════════════════════════════════════════════════════════════
+router.post('/payslips/email/resend', async (req, res) => {
+  try {
+    const { period, employeeNumber } = req.body;
+    if (!period || !employeeNumber) {
+      return res.status(400).json({ error: 'MISSING_FIELDS', message: 'Period and employeeNumber are required' });
+    }
+
+    const record = await Payroll.findOne({
+      period,
+      employeeNumber,
+      status: { $in: ['generated', 'approved', 'paid'] }
+    }).lean();
+
+    if (!record) return res.status(404).json({ error: 'NOT_FOUND', message: 'Payroll record not found for this employee and period' });
+
+    const staff = await Staff.findOne({ employeeId: employeeNumber }).lean();
+    const email = staff?.email;
+    if (!email) return res.status(400).json({ error: 'NO_EMAIL', message: 'Employee has no email address on file' });
+
+    const [year, month] = period.split('-');
+    const periodLabel   = new Date(year, parseInt(month) - 1, 1).toLocaleDateString('en-US', { year: 'numeric', month: 'long' });
+    const tenantName    = req.tenant?.businessInfo?.businessName || req.tenant?.name || 'PPAfan';
+    const flat          = flattenPayrollRecord(record);
+
+    const payslipHtml = buildPayslipEmailHtml({
+      staffName:      `${staff?.firstName || ''} ${staff?.lastName || ''}`.trim() || flat.name,
+      employeeNumber: record.employeeNumber,
+      department:     flat.department || staff?.department || '',
+      position:       flat.position   || staff?.position   || '',
+      period:         periodLabel,
+      payslipId:      `PS-${period.replace('-', '')}-${record.employeeNumber}`,
+      tenantName,
+      tenantLogo:     req.tenant?.logo || req.tenant?.settings?.logo || '',
+      baseSalary:     flat.baseSalary,
+      allowances:     record.salaryStructure?.allowances || [],
+      overtimePay:    flat.overtimePay  || 0,
+      totalBonuses:   flat.totalBonuses || 0,
+      grossSalary:    flat.grossSalary,
+      paye:           flat.paye,
+      pension:        flat.pension,
+      employerPension: record.statutoryDeductions?.pension?.employerContribution || 0,
+      nhf:            flat.nhf,
+      nhis:           flat.nhis,
+      latenessDeduction:   flat.latenessDeduction,
+      lateMinutes:         record.attendanceData?.lateMinutes || 0,
+      lateDays:            record.attendanceData?.lateDays    || flat.lateDays || 0,
+      earlyLeaveDeduction: flat.earlyLeaveDeduction,
+      earlyLeaveMinutes:   record.attendanceData?.earlyLeaveMinutes || 0,
+      absenceDeduction:    flat.absenceDeduction,
+      loanDeduction:       flat.loanDeduction,
+      unpaidLeaveDeduction: flat.unpaidLeaveDeduction || 0,
+      unpaidLeaveDays:      flat.unpaidLeaveDays      || 0,
+      totalDeductions:      flat.totalDeductions,
+      netSalary:            flat.netSalary,
+      workingDays:          record.attendanceData?.workingDays || 0,
+      presentDays:          flat.presentDays,
+      absentDays:           flat.absentDays,
+      bankDetails:          record.payment?.bankDetails || record.bankDetails || staff?.bankDetails || {},
+      hrLeaveEmail:         req.tenant?.settings?.hrLeaveEmail || ''
+    });
+
+    await sendEmail(email, 'payslip', {
+      subject: `Your Payslip - ${periodLabel} | ${tenantName}`,
+      html:    payslipHtml,
+      text:    `Your payslip for ${periodLabel} is ready. Net Pay: ₦${flat.netSalary?.toLocaleString()}`
+    }, req.tenant);
+
+    logger.info('Payslip email resent', { tenantId: TENANT_ID, period, employeeNumber });
+    res.json({ success: true, message: 'Payslip email sent successfully', employeeNumber, period });
+  } catch (err) {
+    logger.error('Error resending payslip email', { tenantId: TENANT_ID, error: err.message });
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
   }
 });

@@ -44,7 +44,9 @@ const getModel = (baseModelName) => {
     'Customer': 'customers',
     'Vendor': 'vendors',
     'InvoiceCounter': 'invoicecounters',
-    'AuditLog': 'auditlogs'
+    'AuditLog': 'auditlogs',
+    'LeavePolicy': 'leavepolicies',
+    'LeaveBalance': 'leavebalances'
   };
 
   try {

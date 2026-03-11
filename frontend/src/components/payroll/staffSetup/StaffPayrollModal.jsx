@@ -22,6 +22,7 @@ import {
   StatusBadge,
   Tip
 } from '../shared';
+import NumericInput from '../../shared/NumericInput.jsx';
 
 // Payment methods
 const PAYMENT_METHODS = [
@@ -74,7 +75,14 @@ function StaffPayrollModal({
       },
       overtimeEligible: staff.payroll?.overtimeEligible !== false,
       paymentMethod: staff.payroll?.paymentMethod || 'bank_transfer',
-      notes: staff.payroll?.notes || ''
+      notes: staff.payroll?.notes || '',
+      // NTA 2025 annual tax reliefs — all values in Naira per annum
+      taxReliefs: {
+        annualRent:              staff.payroll?.taxReliefs?.annualRent              || 0,
+        annualLifeAssurance:     staff.payroll?.taxReliefs?.annualLifeAssurance     || 0,
+        annualMortgageInterest:  staff.payroll?.taxReliefs?.annualMortgageInterest  || 0,
+        voluntaryPensionAVC:     staff.payroll?.taxReliefs?.voluntaryPensionAVC     || 0
+      }
     }
   });
 
@@ -117,9 +125,11 @@ function StaffPayrollModal({
     }
   }, [staff._id, formData, onSave]);
 
-  // Available salary components from settings
+  // Available salary components from settings — allowances only.
+  // Bonuses (13th month, performance, BIK) are period-specific and handled
+  // in the Adjustments step during payroll processing, not here.
   const availableComponents = useMemo(() => {
-    return (settings?.salaryComponents || []).filter(c => c.isActive);
+    return (settings?.salaryComponents || []).filter(c => c.isActive && c.type === 'allowance');
   }, [settings]);
 
   // Toggle allowance
@@ -218,11 +228,10 @@ function StaffPayrollModal({
               <FormField label="Base Salary (Monthly)" required>
                 <div className="relative">
                   <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500">₦</span>
-                  <input
-                    type="number"
-                    value={formData.baseSalary || ''}
-                    onChange={(e) => updateField('baseSalary', parseFloat(e.target.value) || 0)}
-                    placeholder="0"
+                  <NumericInput
+                    value={formData.baseSalary || 0}
+                    onChange={(v) => updateField('baseSalary', v)}
+                    placeholder="e.g. 300,000"
                     className="w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
@@ -303,7 +312,7 @@ function StaffPayrollModal({
           {/* Allowances Tab */}
           {activeTab === 'allowances' && (
             <div className="space-y-4">
-              <Tip>Select allowances to include in this staff member's salary structure.</Tip>
+              <Tip>Select allowances to include in this staff member's salary structure. All allowance amounts are <strong>monthly</strong> figures added to the monthly payroll.</Tip>
 
               {availableComponents.length === 0 ? (
                 <p className="text-center text-gray-500 py-4">
@@ -343,14 +352,17 @@ function StaffPayrollModal({
                           </label>
 
                           {isSelected && component.calculationType === 'fixed' && (
-                            <div className="relative w-32">
-                              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₦</span>
-                              <input
-                                type="number"
-                                value={staffAllowance?.amount || 0}
-                                onChange={(e) => updateAllowanceAmount(component.code, e.target.value)}
-                                className="w-full pl-6 pr-2 py-1.5 text-sm border border-gray-300 rounded bg-white text-gray-900"
-                              />
+                            <div className="text-right">
+                              <div className="relative w-32">
+                                <span className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500 text-sm">₦</span>
+                                <NumericInput
+                                  value={staffAllowance?.amount || 0}
+                                  onChange={(v) => updateAllowanceAmount(component.code, v)}
+                                  placeholder="0"
+                                  className="w-full pl-6 pr-2 py-1.5 text-sm border border-gray-300 rounded bg-white text-gray-900"
+                                />
+                              </div>
+                              <span className="text-xs text-gray-400">/month</span>
                             </div>
                           )}
 
@@ -443,6 +455,72 @@ function StaffPayrollModal({
                     checked={formData.payroll.exemptions.nhis}
                     onChange={(checked) => updateField('payroll.exemptions.nhis', checked)}
                   />
+                </div>
+              </FormSection>
+
+              <FormDivider />
+
+              <FormSection
+                title="Annual Tax Reliefs (NTA 2025)"
+                description="Declared once per year. These amounts reduce this employee's taxable income before PAYE brackets are applied. All values are in Naira per annum."
+              >
+                <div className="p-3 mb-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-700">
+                  Pension, NHF, and NHIS deductions are applied automatically. Only enter reliefs the employee
+                  is claiming in writing — rent paid, life assurance premiums, mortgage interest, and voluntary AVC.
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <FormField
+                    label="Annual Rent Paid (₦)"
+                    hint="Relief = 20% of rent, max ₦500,000/yr"
+                  >
+                    <NumericInput
+                      value={formData.payroll.taxReliefs.annualRent}
+                      onChange={(v) => updateField('payroll.taxReliefs.annualRent', v)}
+                      placeholder="e.g. 1,200,000"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500"
+                    />
+                    {formData.payroll.taxReliefs.annualRent > 0 && (
+                      <p className="text-xs text-green-600 mt-1">
+                        Rent relief: ₦{Math.min(formData.payroll.taxReliefs.annualRent * 0.2, 500000).toLocaleString()}/yr
+                      </p>
+                    )}
+                  </FormField>
+
+                  <FormField
+                    label="Life Assurance Premiums (₦/yr)"
+                    hint="Annual premiums paid on life assurance policies"
+                  >
+                    <NumericInput
+                      value={formData.payroll.taxReliefs.annualLifeAssurance}
+                      onChange={(v) => updateField('payroll.taxReliefs.annualLifeAssurance', v)}
+                      placeholder="e.g. 240,000"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Mortgage Interest (₦/yr)"
+                    hint="Interest paid on mortgage for primary residence"
+                  >
+                    <NumericInput
+                      value={formData.payroll.taxReliefs.annualMortgageInterest}
+                      onChange={(v) => updateField('payroll.taxReliefs.annualMortgageInterest', v)}
+                      placeholder="e.g. 600,000"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Voluntary Pension AVC (₦/yr)"
+                    hint="Additional Voluntary Contributions above mandatory 8%"
+                  >
+                    <NumericInput
+                      value={formData.payroll.taxReliefs.voluntaryPensionAVC}
+                      onChange={(v) => updateField('payroll.taxReliefs.voluntaryPensionAVC', v)}
+                      placeholder="e.g. 120,000"
+                      className="w-full px-3 py-2 border border-gray-300 rounded-lg bg-white text-gray-900 focus:ring-2 focus:ring-blue-500"
+                    />
+                  </FormField>
                 </div>
               </FormSection>
             </div>

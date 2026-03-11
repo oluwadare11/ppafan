@@ -4,6 +4,7 @@
 
 import React, { useState, useCallback } from 'react';
 import { useTenant } from '../../../context/TenantProvider.jsx';
+import NumericInput from '../../shared/NumericInput.jsx';
 import {
   Calculator,
   Plus,
@@ -34,7 +35,7 @@ function Field({ label, hint, children }) {
   );
 }
 
-function NumberInput({ value, onChange, min = 0, placeholder = '0' }) {
+function CountInput({ value, onChange, min = 0, placeholder = '' }) {
   return (
     <input
       type="number"
@@ -108,6 +109,25 @@ export default function PayrollSimulator() {
   const [absentDays, setAbsentDays] = useState(0);
   const [workingDays, setWorkingDays] = useState(26);
   const [exemptions, setExemptions] = useState({ paye: false, pension: false, nhf: false, nhis: false });
+  // One-off additions (NTA 2025: fully taxable, excluded from pension/NHF base)
+  const ONE_OFF_TYPES = [
+    { value: 'leave_bonus',       label: 'Leave Bonus' },
+    { value: 'thirteenth_month',  label: '13th Month' },
+    { value: 'performance_bonus', label: 'Performance Bonus' },
+    { value: 'benefit_in_kind',   label: 'Benefit-in-Kind (BIK)' },
+    { value: 'other',             label: 'Other' },
+  ];
+  const [oneOffs, setOneOffs] = useState([]);
+  const addOneOff = () => setOneOffs(p => [...p, { type: 'leave_bonus', amount: 0 }]);
+  const updateOneOff = (idx, field, value) => setOneOffs(p => p.map((o, i) => i === idx ? { ...o, [field]: value } : o));
+  const removeOneOff = (idx) => setOneOffs(p => p.filter((_, i) => i !== idx));
+  // NTA 2025 annual tax reliefs (declared once, reduce taxable income before PAYE)
+  const [taxReliefs, setTaxReliefs] = useState({
+    annualRent: 0,
+    annualLifeAssurance: 0,
+    annualMortgageInterest: 0,
+    voluntaryPensionAVC: 0
+  });
 
   // ── state ──
   const [result, setResult] = useState(null);
@@ -129,7 +149,13 @@ export default function PayrollSimulator() {
           earlyLeaveDays,
           absentDays,
           workingDays,
-          exemptions
+          exemptions,
+          taxReliefs,
+          oneOffs: oneOffs.filter(o => o.amount > 0).map(o => ({
+            type: o.type,
+            label: ONE_OFF_TYPES.find(t => t.value === o.type)?.label || 'One-off',
+            amount: o.amount
+          }))
         })
       });
       setResult(res);
@@ -138,7 +164,7 @@ export default function PayrollSimulator() {
     } finally {
       setLoading(false);
     }
-  }, [makeRequest, baseSalary, allowances, lateDays, earlyLeaveDays, absentDays, workingDays, exemptions]);
+  }, [makeRequest, baseSalary, allowances, lateDays, earlyLeaveDays, absentDays, workingDays, exemptions, taxReliefs, oneOffs]);
 
   // ── allowance CRUD ──
   const addAllowance = () => {
@@ -165,6 +191,7 @@ export default function PayrollSimulator() {
   const removeEarlyLeaveDay = (idx) => setEarlyLeaveDays(prev => prev.filter((_, i) => i !== idx));
 
   const grossPreview = baseSalary + allowances.reduce((s, a) => s + (a.amount || 0), 0);
+  const oneOffPreview = oneOffs.reduce((s, o) => s + (o.amount || 0), 0);
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -183,7 +210,7 @@ export default function PayrollSimulator() {
         {/* Earnings */}
         <SectionCard title="Earnings">
           <Field label="Base Salary" hint="monthly">
-            <NumberInput value={baseSalary} onChange={setBaseSalary} />
+            <NumericInput value={baseSalary} onChange={setBaseSalary} placeholder="e.g. 300,000" />
           </Field>
 
           <div className="space-y-2">
@@ -206,11 +233,9 @@ export default function PayrollSimulator() {
                   className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="Allowance name"
                 />
-                <input
-                  type="number"
-                  min={0}
+                <NumericInput
                   value={a.amount}
-                  onChange={(e) => updateAllowance(idx, 'amount', Number(e.target.value) || 0)}
+                  onChange={(v) => updateAllowance(idx, 'amount', v)}
                   className="w-32 px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="0"
                 />
@@ -230,11 +255,11 @@ export default function PayrollSimulator() {
         {/* Attendance / Deductions */}
         <SectionCard title="Deductions: Attendance & Absences" defaultOpen={false}>
           <Field label="Working Days This Month">
-            <NumberInput value={workingDays} onChange={setWorkingDays} min={1} />
+            <CountInput value={workingDays} onChange={setWorkingDays} min={1} />
           </Field>
 
           <Field label="Absent Days (full day)">
-            <NumberInput value={absentDays} onChange={setAbsentDays} />
+            <CountInput value={absentDays} onChange={setAbsentDays} />
           </Field>
 
           {/* Late days */}
@@ -310,6 +335,73 @@ export default function PayrollSimulator() {
           ))}
         </SectionCard>
 
+        {/* NTA 2025 Tax Reliefs */}
+        <SectionCard title="Annual Tax Reliefs (NTA 2025)" defaultOpen={false}>
+          <p className="text-xs text-gray-500 -mt-1 mb-2">
+            These reduce taxable income before PAYE. Pension, NHF, and NHIS are applied automatically.
+            Enter reliefs the employee is claiming in writing.
+          </p>
+          <Field label="Annual Rent Paid" hint="Relief = 20% of rent, max ₦500k/yr">
+            <NumericInput value={taxReliefs.annualRent} onChange={(v) => setTaxReliefs(p => ({ ...p, annualRent: v }))} placeholder="e.g. 1,200,000" />
+            {taxReliefs.annualRent > 0 && (
+              <p className="text-xs text-green-600 mt-1">
+                Rent relief: ₦{Math.min(taxReliefs.annualRent * 0.2, 500000).toLocaleString()}/yr
+              </p>
+            )}
+          </Field>
+          <Field label="Life Assurance Premiums" hint="annual">
+            <NumericInput value={taxReliefs.annualLifeAssurance} onChange={(v) => setTaxReliefs(p => ({ ...p, annualLifeAssurance: v }))} placeholder="e.g. 240,000" />
+          </Field>
+          <Field label="Mortgage Interest" hint="annual">
+            <NumericInput value={taxReliefs.annualMortgageInterest} onChange={(v) => setTaxReliefs(p => ({ ...p, annualMortgageInterest: v }))} placeholder="e.g. 600,000" />
+          </Field>
+          <Field label="Voluntary Pension AVC" hint="annual, above mandatory 8%">
+            <NumericInput value={taxReliefs.voluntaryPensionAVC} onChange={(v) => setTaxReliefs(p => ({ ...p, voluntaryPensionAVC: v }))} placeholder="e.g. 120,000" />
+          </Field>
+        </SectionCard>
+
+        {/* One-off Additions */}
+        <SectionCard title="One-off Additions" defaultOpen={false}>
+          <p className="text-xs text-gray-500 -mt-1 mb-2">
+            Taxable in the month paid (NTA 2025). Not included in pension or NHF base.
+            For BIK (e.g. company car), enter the taxable value only — typically 5% of asset cost.
+          </p>
+          <div className="space-y-2">
+            {oneOffs.map((o, idx) => (
+              <div key={idx} className="flex items-center gap-2">
+                <select
+                  value={o.type}
+                  onChange={e => updateOneOff(idx, 'type', e.target.value)}
+                  className="flex-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white"
+                >
+                  {ONE_OFF_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+                <NumericInput
+                  value={o.amount}
+                  onChange={v => updateOneOff(idx, 'amount', v)}
+                  className="w-32 px-2 py-1.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="0"
+                />
+                <button onClick={() => removeOneOff(idx)} className="text-red-400 hover:text-red-600 shrink-0">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button
+            onClick={addOneOff}
+            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 mt-1"
+          >
+            <Plus className="w-3 h-3" /> Add one-off
+          </button>
+          {oneOffPreview > 0 && (
+            <div className="flex justify-between pt-2 border-t border-gray-100 text-sm font-semibold text-gray-800">
+              <span>Total One-offs</span>
+              <span>{fmt(oneOffPreview)}</span>
+            </div>
+          )}
+        </SectionCard>
+
         {/* Calculate button */}
         <button
           onClick={handleSimulate}
@@ -370,8 +462,21 @@ export default function PayrollSimulator() {
                   </>
                 )}
                 <Divider />
-                <ResultRow label="Gross Monthly" amount={result.earnings.grossMonthly} highlight />
-                <ResultRow label="Annual Gross" amount={result.earnings.annualGross} />
+                <ResultRow label="Gross Monthly (Regular)" amount={result.earnings.grossMonthly} highlight />
+                {(result.earnings.oneOffs || []).length > 0 && (
+                  <>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1 mt-2">One-off Additions</p>
+                    <div className="pl-4 space-y-0.5">
+                      {result.earnings.oneOffs.map((o, i) => (
+                        <ResultRow key={i} label={o.label || o.type} amount={o.amount} indent />
+                      ))}
+                    </div>
+                    <ResultRow label="Total One-offs" amount={result.earnings.oneOffTotal} />
+                    <Divider />
+                    <ResultRow label="Total Gross (incl. one-offs)" amount={result.earnings.grossWithOneOffs} highlight />
+                  </>
+                )}
+                <ResultRow label="Annual Gross (regular)" amount={result.earnings.annualGross} />
 
                 {/* Statutory deductions */}
                 <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 mb-1 mt-3">Statutory Deductions</p>
@@ -384,6 +489,9 @@ export default function PayrollSimulator() {
                   >
                     <span className="flex items-center gap-1 text-sm text-gray-600">
                       PAYE Tax
+                      {result.statutoryDeductions.paye.oneOffPAYE > 0 && (
+                        <span className="text-xs bg-amber-100 text-amber-700 px-1.5 rounded">incl. one-off</span>
+                      )}
                       <span className="text-xs text-blue-500">{payeExpanded ? '▲' : '▼'}</span>
                     </span>
                     <span className="text-sm font-medium text-red-600">
@@ -396,10 +504,53 @@ export default function PayrollSimulator() {
                         <span>Annual Gross</span>
                         <span>{fmt(result.statutoryDeductions.paye.details.annualGross)}</span>
                       </div>
-                      <div className="flex justify-between">
-                        <span>Pre-Tax Deductions</span>
-                        <span>−{fmt(result.statutoryDeductions.paye.details.preTaxDeductions?.total)}</span>
-                      </div>
+                      {result.statutoryDeductions.paye.details.method === 'nta_2025' && result.statutoryDeductions.paye.details.preTaxDeductions && (() => {
+                        const ptd = result.statutoryDeductions.paye.details.preTaxDeductions;
+                        return (
+                          <>
+                            {ptd.pension > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− Pension (employee)</span><span>−{fmt(ptd.pension)}</span>
+                              </div>
+                            )}
+                            {ptd.nhf > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− NHF</span><span>−{fmt(ptd.nhf)}</span>
+                              </div>
+                            )}
+                            {ptd.nhis > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− NHIS</span><span>−{fmt(ptd.nhis)}</span>
+                              </div>
+                            )}
+                            {ptd.rentRelief > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− Rent Relief</span><span>−{fmt(ptd.rentRelief)}</span>
+                              </div>
+                            )}
+                            {ptd.lifeAssurance > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− Life Assurance</span><span>−{fmt(ptd.lifeAssurance)}</span>
+                              </div>
+                            )}
+                            {ptd.mortgageInterest > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− Mortgage Interest</span><span>−{fmt(ptd.mortgageInterest)}</span>
+                              </div>
+                            )}
+                            {ptd.voluntaryAVC > 0 && (
+                              <div className="flex justify-between text-gray-500">
+                                <span className="pl-2">− Voluntary AVC</span><span>−{fmt(ptd.voluntaryAVC)}</span>
+                              </div>
+                            )}
+                            {ptd.total > 0 && (
+                              <div className="flex justify-between text-gray-500 border-t border-gray-200 pt-1">
+                                <span>Total Pre-Tax Deductions</span><span>−{fmt(ptd.total)}</span>
+                              </div>
+                            )}
+                          </>
+                        );
+                      })()}
                       <div className="flex justify-between font-medium text-gray-700">
                         <span>Taxable Income</span>
                         <span>{fmt(result.statutoryDeductions.paye.details.taxableIncome)}</span>
@@ -411,19 +562,31 @@ export default function PayrollSimulator() {
                         </div>
                       ))}
                       <div className="border-t pt-1 flex justify-between font-medium">
-                        <span>Annual PAYE</span>
+                        <span>Annual PAYE (regular)</span>
                         <span>{fmt(result.statutoryDeductions.paye.annualAmount)}</span>
                       </div>
                       <div className="flex justify-between font-medium text-red-600">
-                        <span>Monthly PAYE</span>
-                        <span>{fmt(result.statutoryDeductions.paye.monthlyAmount)}</span>
+                        <span>Monthly PAYE (regular)</span>
+                        <span>{fmt(result.statutoryDeductions.paye.regularMonthlyAmount ?? result.statutoryDeductions.paye.monthlyAmount)}</span>
                       </div>
+                      {result.statutoryDeductions.paye.oneOffPAYE > 0 && (
+                        <div className="flex justify-between text-amber-700 font-medium">
+                          <span>One-off PAYE (incremental)</span>
+                          <span>+{fmt(result.statutoryDeductions.paye.oneOffPAYE)}</span>
+                        </div>
+                      )}
+                      {result.statutoryDeductions.paye.oneOffPAYE > 0 && (
+                        <div className="flex justify-between font-bold text-red-700 border-t border-gray-200 pt-1">
+                          <span>Total PAYE this month</span>
+                          <span>{fmt(result.statutoryDeductions.paye.monthlyAmount)}</span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
 
                 <ResultRow label="Pension (Employee 8%)" amount={result.statutoryDeductions.pension.employeeAmount} negative />
-                <ResultRow label="NHF (2.5% basic)" amount={result.statutoryDeductions.nhf.amount} negative />
+                <ResultRow label="NHF (2.5% gross)" amount={result.statutoryDeductions.nhf.amount} negative />
                 {result.statutoryDeductions.nhis.employeeAmount > 0 && (
                   <ResultRow label="NHIS (Employee 5%)" amount={result.statutoryDeductions.nhis.employeeAmount} negative />
                 )}
@@ -476,7 +639,7 @@ export default function PayrollSimulator() {
             {/* Employer cost card */}
             <div className="bg-white rounded-xl border border-gray-200 px-5 py-4">
               <p className="text-sm font-semibold text-gray-700 mb-3">Employer Total Cost</p>
-              <ResultRow label="Gross Paid to Staff" amount={result.summary.grossMonthly} />
+              <ResultRow label="Gross Paid to Staff" amount={result.summary.grossWithOneOffs ?? result.summary.grossMonthly} />
               <ResultRow label="Employer Pension (10%)" amount={result.summary.employerContributions.pension} />
               {result.summary.employerContributions.nhis > 0 && (
                 <ResultRow label="NHIS (Employer 10%)" amount={result.summary.employerContributions.nhis} />
