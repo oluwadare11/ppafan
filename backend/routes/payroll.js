@@ -1300,13 +1300,18 @@ router.get('/bonuses/:period', async (req, res) => {
     const records = await Payroll.find({
       tenantId: TENANT_ID, period,
       'salaryStructure.bonuses': { $exists: true, $ne: [] }
-    }).select('employeeNumber employeeName salaryStructure.bonuses');
+    }).select('employeeNumber salaryStructure.bonuses').lean();
+
+    const empNums = [...new Set(records.map(r => String(r.employeeNumber)))];
+    const staffDocs = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const nameMap = {};
+    staffDocs.forEach(s => { nameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
     const bonuses = records.flatMap(r =>
       (r.salaryStructure?.bonuses || []).map(b => ({
-        ...(b.toObject ? b.toObject() : b),
+        ...b,
         employeeNumber: r.employeeNumber,
-        employeeName:   r.employeeName
+        employeeName:   nameMap[String(r.employeeNumber)] || r.employeeNumber
       }))
     );
 
@@ -1375,11 +1380,16 @@ router.get('/overtime/:period', async (req, res) => {
     const records    = await Payroll.find({
       tenantId: TENANT_ID, period,
       'salaryStructure.overtime.totalHours': { $gt: 0 }
-    }).select('employeeNumber employeeName salaryStructure.overtime');
+    }).select('employeeNumber salaryStructure.overtime').lean();
+
+    const empNums = [...new Set(records.map(r => String(r.employeeNumber)))];
+    const staffDocs = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const nameMap = {};
+    staffDocs.forEach(s => { nameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
     const overtime = records.map(r => ({
       employeeNumber: r.employeeNumber,
-      employeeName:   r.employeeName,
+      employeeName:   nameMap[String(r.employeeNumber)] || r.employeeNumber,
       totalHours:     r.salaryStructure?.overtime?.totalHours  || 0,
       totalAmount:    r.salaryStructure?.overtime?.totalAmount || 0,
       breakdown:      r.salaryStructure?.overtime?.breakdown   || []
