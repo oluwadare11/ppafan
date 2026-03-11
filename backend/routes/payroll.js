@@ -917,14 +917,23 @@ router.post('/process/generate', async (req, res) => {
       generatedBy: req.user?.username
     });
 
+    const totalNetPay = results.payrollRecords.reduce((s, r) => s + (r.netPay || 0), 0);
+
     res.json({
-      success:    true,
-      message:    `Payroll generated for ${results.success} staff members`,
+      success:     true,
+      message:     `Payroll generated for ${results.success} staff members`,
       period,
-      staffCount: results.success,
-      failed:     results.failed,
-      errors:     results.errors,
-      records:    results.payrollRecords
+      workingDays,
+      results: {
+        processed: results.success,
+        failed:    results.failed
+      },
+      summary: {
+        totalNetPay,
+        staffCount: results.success
+      },
+      errors:      results.errors,
+      records:     results.payrollRecords
     });
   } catch (err) {
     logger.error('Payroll generation failed', { tenantId: TENANT_ID, error: err.message });
