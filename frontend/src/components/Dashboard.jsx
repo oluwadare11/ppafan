@@ -689,6 +689,16 @@ const Dashboard = () => {
                 <p className="text-xs sm:text-sm font-medium truncate">Attendance</p>
               </button>
             )}
+            {/* Tier 2+: Payroll */}
+            {currentTier >= 2 && (
+              <button
+                onClick={() => navigateWithTenant('/payroll')}
+                className="p-3 sm:p-4 rounded-xl bg-gradient-to-r from-teal-500 to-cyan-600 text-white hover:scale-105 transition-all duration-300 shadow-md hover:shadow-lg"
+              >
+                <DollarSign className="w-5 h-5 sm:w-6 sm:h-6 mx-auto mb-1 sm:mb-2" />
+                <p className="text-xs sm:text-sm font-medium truncate">Payroll</p>
+              </button>
+            )}
             {/* Pump House ERP - Only show relevant modules */}
           </div>
         </div>

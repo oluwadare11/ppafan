@@ -34,7 +34,7 @@ router.use(addTenantHelpers);
 // Rate limiting for login attempts
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 50, // 50 attempts per IP per tenant
+  max: process.env.NODE_ENV === 'development' ? 10000 : 50, // bypass in dev
   message: {
     error: 'TOO_MANY_LOGIN_ATTEMPTS',
     message: 'Too many login attempts. Please try again after 15 minutes.',
@@ -45,14 +45,13 @@ const loginLimiter = rateLimit({
 
 const kioskLoginLimiter = rateLimit({
   windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 30, // 30 attempts per 5 minutes - more generous for busy cashiers
+  max: process.env.NODE_ENV === 'development' ? 10000 : 200, // 200/5min for busy cashiers
   message: {
     error: 'TOO_MANY_KIOSK_ATTEMPTS',
     message: 'Too many login attempts. Please wait a few minutes and try again.',
   },
   standardHeaders: true,
   legacyHeaders: false,
-  // Skip rate limiting for successful requests
   skipSuccessfulRequests: true,
 });
 

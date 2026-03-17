@@ -1851,7 +1851,7 @@ router.delete('/holidays/:holidayId', async (req, res) => {
 
     if (!deleted) return res.status(404).json({ error: 'HOLIDAY_NOT_FOUND', message: 'Holiday not found' });
 
-    logger.info('Holiday deleted', { tenantId: req.tenantId, holidayId, deletedBy: req.user.username });
+    logger.info('Holiday deleted', { tenantId: req.tenantId, holidayId, deletedBy: req.user?.username || req.user?.id });
     res.json({ success: true, message: 'Holiday deleted successfully' });
 
   } catch (err) {
@@ -2022,6 +2022,16 @@ router.get('/leaves', async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
+    // Enrich with staffName from Staff collection
+    const TenantStaff = req.getTenantModel('Staff');
+    if (TenantStaff && leaveRequests.length > 0) {
+      const empIds = [...new Set(leaveRequests.map(r => r.employeeId).filter(Boolean))];
+      const staffList = await TenantStaff.find({ tenantId: req.tenantId, employeeId: { $in: empIds } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+      const nameMap = {};
+      staffList.forEach(s => { nameMap[s.employeeId] = `${s.firstName} ${s.lastName || ''}`.trim(); });
+      leaveRequests.forEach(r => { r.staffName = nameMap[r.employeeId] || r.employeeId; });
+    }
+
     res.json(leaveRequests);
 
   } catch (err) {
@@ -2079,37 +2089,40 @@ router.post('/leaves/:id/approve', async (req, res) => {
       });
     }
 
-    // Update status
-    if (action === 'approve') {
-      leaveRequest.status = 'approved';
-    } else {
-      leaveRequest.status = 'rejected';
-      leaveRequest.rejectionReason = reason;
-    }
+    const approvedBy = req.user?.username || req.user?.id || 'admin';
 
-    leaveRequest.approvedBy = req.user.username;
-    leaveRequest.approvedAt = new Date();
+    // Use findOneAndUpdate to bypass required-field validators on unchanged fields (e.g. staffId)
+    const updateFields = {
+      status: action === 'approve' ? 'approved' : 'rejected',
+      approvedBy,
+      approvedAt: new Date()
+    };
+    if (action === 'reject') updateFields.rejectionReason = reason || null;
 
-    await leaveRequest.save();
+    const updated = await TenantLeaveRequest.findOneAndUpdate(
+      { _id: id, tenantId: req.tenantId },
+      { $set: updateFields },
+      { new: true }
+    );
 
     logger.info(`Leave request ${action}d`, {
       tenantId: req.tenantId,
       leaveRequestId: id,
       employeeId: leaveRequest.employeeId,
       action: action,
-      approvedBy: req.user.username
+      approvedBy
     });
 
     res.json({
       success: true,
       message: `Leave request ${action}d successfully`,
       leaveRequest: {
-        _id: leaveRequest._id,
-        employeeId: leaveRequest.employeeId,
-        status: leaveRequest.status,
-        approvedBy: leaveRequest.approvedBy,
-        approvedAt: leaveRequest.approvedAt,
-        rejectionReason: leaveRequest.rejectionReason
+        _id: updated._id,
+        employeeId: updated.employeeId,
+        status: updated.status,
+        approvedBy: updated.approvedBy,
+        approvedAt: updated.approvedAt,
+        rejectionReason: updated.rejectionReason
       }
     });
 
@@ -2118,7 +2131,7 @@ router.post('/leaves/:id/approve', async (req, res) => {
       tenantId: req.tenantId,
       leaveRequestId: req.params.id,
       error: err.message,
-      userId: req.user.id
+      userId: req.user?.id
     });
     res.status(500).json({
       error: 'PROCESS_LEAVE_FAILED',
@@ -2409,7 +2422,7 @@ router.post('/recalculate', async (req, res) => {
             : null;
           if (!shift) { stats.skipped++; continue; }
 
-          // Skip staff on approved leave
+          // Handle staff on approved leave — clear any stale absent record
           if (TenantLeaveRequest) {
             const onLeave = await TenantLeaveRequest.findOne({
               employeeId,
@@ -2418,7 +2431,15 @@ router.post('/recalculate', async (req, res) => {
               startDate: { $lte: dateObj },
               endDate: { $gte: dateObj }
             });
-            if (onLeave) { stats.skipped++; continue; }
+            if (onLeave) {
+              // Clear any absent record created before the leave was approved
+              await TenantAttendance.updateOne(
+                { employeeId, date: dateStr, tenantId: req.tenantId, absent: true },
+                { $set: { absent: false, adjustmentNote: `On approved ${onLeave.leaveType} leave` } }
+              );
+              stats.skipped++;
+              continue;
+            }
           }
 
           const existing = await TenantAttendance.findOne({ employeeId, date: dateStr, tenantId: req.tenantId });
@@ -2584,7 +2605,7 @@ router.get('/leave-policies', async (req, res) => {
   try {
     const TenantLeavePolicy = req.getTenantModel('LeavePolicy');
     if (!TenantLeavePolicy) return res.json({ policies: [] });
-    const policies = await TenantLeavePolicy.find({ tenantId: req.tenantId }).sort({ leaveType: 1 }).lean();
+    const policies = await TenantLeavePolicy.find({ tenantId: req.tenantId, isActive: { $ne: false } }).sort({ leaveType: 1 }).lean();
     res.json({ success: true, policies, count: policies.length });
   } catch (err) {
     logger.error('Error fetching leave policies', { tenantId: req.tenantId, error: err.message });

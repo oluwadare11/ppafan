@@ -9,6 +9,7 @@ import Dashboard from './attendance/Dashboard';
 import EnhancedShiftManagement from './attendance/ShiftManagement';
 import DeviceManagement from './attendance/DeviceManagement';
 import HolidayAndLeave from './attendance/HolidayLeave';
+import LeaveManagement from './attendance/leave/LeaveManagement';
 import Reports from './attendance/Reports';
 import StaffManagement from './attendance/StaffManagement';
 import { formatDate, formatTime, isValidDate } from '../utils/dateUtils';
@@ -241,7 +242,8 @@ function Attendance() {
     { id: 'devices', icon: FaServer, label: 'Devices' },
     { id: 'staff', icon: FaUsers, label: 'Staff' },
     { id: 'shifts', icon: MdWork, label: 'Shifts' },
-    { id: 'holidays', icon: MdEvent, label: 'Leave' },
+    { id: 'leave',    icon: MdEvent, label: 'Leave' },
+    { id: 'holidays', icon: FaClock, label: 'Holidays' },
     { id: 'reports', icon: FaFileExport, label: 'Reports' },
   ];
 
@@ -1456,24 +1458,19 @@ function Attendance() {
           />
         )}
 
-        {/* HOLIDAY & LEAVE SECTION */}
+        {/* LEAVE SECTION */}
+        {activeSection === 'leave' && (
+          <LeaveManagement staff={staff} />
+        )}
+
+        {/* HOLIDAYS SECTION */}
         {activeSection === 'holidays' && (
           <HolidayAndLeave
-            staff={staff}
             holidays={holidays}
-            leaveRequests={leaveRequests}
             newHoliday={newHoliday}
             setNewHoliday={setNewHoliday}
-            newLeave={newLeave}
-            setNewLeave={setNewLeave}
-            editingLeave={editingLeave}
-            setEditingLeave={setEditingLeave}
             handleAddHoliday={handleAddHoliday}
             handleDeleteHoliday={handleDeleteHoliday}
-            handleAddLeave={handleAddLeave}
-            editLeave={handleEditLeave}
-            deleteLeave={handleDeleteLeave}
-            getStaffName={getStaffName}
             loading={actionLoading}
           />
         )}

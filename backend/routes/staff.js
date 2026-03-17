@@ -10,7 +10,7 @@ const logger = require('../utils/logger');
 // Rate limiter for verify-code endpoint (public, needs protection)
 const verifyCodeLimiter = rateLimit({
   windowMs: 1 * 60 * 1000, // 1 minute
-  max: 20, // 20 requests per minute (generous for kiosk usage)
+  max: process.env.NODE_ENV === 'development' ? 10000 : 120, // 120/min for kiosk (bypass in dev)
   message: {
     success: false,
     message: 'Too many verification requests. Please wait a moment.'
@@ -803,7 +803,7 @@ router.post('/', async (req, res) => {
       baseSalary: baseSalary || 0,
       bonuses: bonuses || 0,
       kioskAccess: req.body.kioskAccess || false, // FIX: Save kioskAccess to staff record
-      pin: shouldStorePinInStaff ? pin : undefined, // FIX: Store PIN for any kiosk-enabled staff
+      pin: shouldStorePinInStaff ? await bcrypt.hash(pin, 10) : undefined, // Hash PIN before storing
       tenantId: req.tenantId
     });
 
@@ -1053,10 +1053,10 @@ router.put('/:id', async (req, res) => {
     const kioskAccessValue = req.body.kioskAccess !== undefined ? req.body.kioskAccess : staff.kioskAccess;
     staff.kioskAccess = kioskAccessValue;
 
-    // Store PIN only for kiosk-enabled staff
+    // Store PIN only for kiosk-enabled staff (hashed)
     const shouldStorePinInStaff = kioskAccessValue && pin;
     if (shouldStorePinInStaff) {
-      staff.pin = pin;
+      staff.pin = await bcrypt.hash(pin, 10);
     } else if (!kioskAccessValue) {
       staff.pin = undefined; // Clear PIN if kiosk access is disabled
     }
