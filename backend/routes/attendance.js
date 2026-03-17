@@ -1839,7 +1839,7 @@ router.delete('/holidays/:holidayId', async (req, res) => {
         'holidays._id': holidayId
       });
       if (attendance) {
-        attendance.holidays.id(holidayId).remove();
+        attendance.holidays.pull({ _id: holidayId });
         if (attendance.holidays.length === 0) {
           await TenantAttendance.findByIdAndDelete(attendance._id);
         } else {
@@ -2420,7 +2420,20 @@ router.post('/recalculate', async (req, res) => {
           const shift = TenantShift
             ? await getEffectiveShift(staff._id, employeeId, dateStr, req.tenantId, TenantShift)
             : null;
-          if (!shift) { stats.skipped++; continue; }
+          if (!shift) {
+            // Day is no longer a working day for this staff — delete any stale auto-generated absent record
+            await TenantAttendance.deleteOne({
+              employeeId,
+              date: dateStr,
+              tenantId: req.tenantId,
+              absent: true,
+              checkIn: null,
+              checkOut: null,
+              adjustmentNote: { $not: /^Manual entry/ }
+            });
+            stats.skipped++;
+            continue;
+          }
 
           // Handle staff on approved leave — clear any stale absent record
           if (TenantLeaveRequest) {
