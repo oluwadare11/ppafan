@@ -593,7 +593,7 @@ const AuthProvider = ({ children }) => {
           }
         }
       }
-    }, 13 * 60 * 1000); // 13 minutes
+    }, 11 * 60 * 60 * 1000); // 11 hours (refresh before 12h token expires)
 
     return () => clearTimeout(refreshTimer);
   }, [makeRequest, forceRedirectToLogin]);

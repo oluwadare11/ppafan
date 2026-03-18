@@ -9,7 +9,7 @@ const generateTokenPair = (payload) => {
   const accessToken = jwt.sign(
     payload,
     process.env.JWT_SECRET,
-    { expiresIn: '15m' }
+    { expiresIn: '12h' }
   );
   
   const refreshToken = crypto.randomBytes(32).toString('hex');
@@ -40,7 +40,7 @@ const refreshAccessToken = (refreshToken) => {
       role: tokenData.role
     },
     process.env.JWT_SECRET,
-    { expiresIn: '15m' }
+    { expiresIn: '12h' }
   );
   
   return newAccessToken;
@@ -80,7 +80,7 @@ const setSecureCookies = (res, accessToken, refreshToken, options = {}) => {
 
     res.cookie(accessTokenName, accessToken, {
       ...devCookieOptions,
-      maxAge: 15 * 60 * 1000 // 15 minutes
+      maxAge: 12 * 60 * 60 * 1000 // 12 hours // 15 minutes
     });
 
     res.cookie(refreshTokenName, refreshToken, {
@@ -94,7 +94,7 @@ const setSecureCookies = (res, accessToken, refreshToken, options = {}) => {
     res.cookie(csrfTokenName, csrfToken, {
       ...devCookieOptions,
       httpOnly: false, // Frontend needs to read this
-      maxAge: 15 * 60 * 1000
+      maxAge: 12 * 60 * 60 * 1000 // 12 hours
     });
 
     console.log('DEV COOKIES SET: No sameSite (localhost permissive mode), HTTP allowed');
