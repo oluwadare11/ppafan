@@ -334,11 +334,20 @@ router.get('/staff-setup/:staffId', async (req, res) => {
         department:   staffMember.department || 'N/A',
         position:     staffMember.position   || 'N/A',
         baseSalary:   staffMember.baseSalary || 0,
-        allowances:   staffMember.payroll?.allowances    || [],
-        exemptions:   staffMember.payroll?.exemptions    || {},
-        taxReliefs:   staffMember.payroll?.taxReliefs    || {},
-        statutoryInfo: staffMember.payroll?.statutoryInfo || {},
-        bankDetails:  staffMember.bankDetails || staffMember.payroll?.bankDetails || {}
+        bankDetails:  staffMember.bankDetails || staffMember.payroll?.bankDetails || {},
+        payroll: {
+          salaryType:            staffMember.payroll?.salaryType    || 'monthly',
+          allowances:            staffMember.payroll?.allowances    || [],
+          exemptions:            staffMember.payroll?.exemptions    || {},
+          taxReliefs:            staffMember.payroll?.taxReliefs    || {},
+          statutoryInfo:         staffMember.payroll?.statutoryInfo || {},
+          overtimeEligible:      staffMember.payroll?.overtimeEligible !== false,
+          excludeFromDeductions: staffMember.payroll?.excludeFromDeductions || false,
+          paymentMethod:         staffMember.payroll?.paymentMethod  || 'bank_transfer',
+          notes:                 staffMember.payroll?.notes          || '',
+          lastUpdated:           staffMember.payroll?.lastUpdated,
+          updatedBy:             staffMember.payroll?.updatedBy
+        }
       }
     });
   } catch (err) {
@@ -349,18 +358,26 @@ router.get('/staff-setup/:staffId', async (req, res) => {
 // Update single staff payroll setup
 router.put('/staff-setup/:staffId', async (req, res) => {
   try {
-    const { baseSalary, allowances, bankDetails, exemptions, taxReliefs, statutoryInfo } = req.body;
+    const { baseSalary, allowances, bankDetails, exemptions, taxReliefs, statutoryInfo, payroll } = req.body;
+
+    // Support both flat fields and nested payroll object from StaffPayrollModal
+    const payrollPatch = payroll || {};
 
     const staffMember = await Staff.findById(req.params.staffId);
     if (!staffMember) return res.status(404).json({ error: 'STAFF_NOT_FOUND' });
 
     if (!staffMember.payroll) staffMember.payroll = {};
     if (baseSalary     !== undefined) staffMember.baseSalary              = Number(baseSalary);
-    if (allowances     !== undefined) staffMember.payroll.allowances       = allowances;
+    if ((allowances    !== undefined) || payrollPatch.allowances     !== undefined) staffMember.payroll.allowances       = allowances ?? payrollPatch.allowances;
     if (bankDetails    !== undefined) staffMember.bankDetails              = bankDetails;
-    if (exemptions     !== undefined) staffMember.payroll.exemptions       = exemptions;
-    if (taxReliefs     !== undefined) staffMember.payroll.taxReliefs       = taxReliefs;
-    if (statutoryInfo  !== undefined) staffMember.payroll.statutoryInfo    = statutoryInfo;
+    if ((exemptions    !== undefined) || payrollPatch.exemptions     !== undefined) staffMember.payroll.exemptions       = exemptions ?? payrollPatch.exemptions;
+    if ((taxReliefs    !== undefined) || payrollPatch.taxReliefs     !== undefined) staffMember.payroll.taxReliefs       = taxReliefs ?? payrollPatch.taxReliefs;
+    if ((statutoryInfo !== undefined) || payrollPatch.statutoryInfo  !== undefined) staffMember.payroll.statutoryInfo    = statutoryInfo ?? payrollPatch.statutoryInfo;
+    if (payrollPatch.overtimeEligible  !== undefined) staffMember.payroll.overtimeEligible  = payrollPatch.overtimeEligible;
+    if (payrollPatch.excludeFromDeductions !== undefined) staffMember.payroll.excludeFromDeductions = payrollPatch.excludeFromDeductions;
+    if (payrollPatch.paymentMethod     !== undefined) staffMember.payroll.paymentMethod     = payrollPatch.paymentMethod;
+    if (payrollPatch.notes             !== undefined) staffMember.payroll.notes             = payrollPatch.notes;
+    if (payroll?.baseSalary !== undefined && baseSalary === undefined) staffMember.baseSalary = Number(payroll.baseSalary);
 
     staffMember.payroll.lastUpdated = new Date();
     await staffMember.save();
@@ -2285,6 +2302,10 @@ router.post('/deductions/recalculate-attendance', async (req, res) => {
 
     const deductionSettings = (await PayrollSettings.findOne({ tenantId: TENANT_ID }).lean()) || {};
 
+    // Build set of staff excluded from attendance deductions
+    const excludedStaffList = await Staff.find({ 'payroll.excludeFromDeductions': true }, 'employeeId').lean();
+    const excludedEmpNums   = new Set(excludedStaffList.map(s => String(s.employeeId)));
+
     // Build list of YYYY-MM periods in range
     const periods = [];
     let [yr, mo] = startPeriod.split('-').map(Number);
@@ -2341,6 +2362,12 @@ router.post('/deductions/recalculate-attendance', async (req, res) => {
       for (const pr of payrollRecords) {
         try {
           const empNo = pr.employeeNumber;
+
+          // Skip staff excluded from attendance deductions
+          if (excludedEmpNums.has(String(empNo))) {
+            summary.processed++;
+            continue;
+          }
 
           const attRecords = await Attendance.find({
             tenantId: TENANT_ID,

@@ -138,7 +138,8 @@ async function detectAbsences(dateStr, settings) {
     const allStaff = await Staff.find({
       baseSalary: { $exists: true, $gt: 0 },
       employeeId: { $not: /^CONFIG_/ },
-      status:     'active'
+      status:     'active',
+      'payroll.excludeFromDeductions': { $ne: true }
     });
 
     const attendanceRecords = await Attendance.find({
@@ -272,6 +273,12 @@ async function calculatePayroll(startDate, endDate, calculationType = 'monthly',
 
     for (const staffMember of staff) {
       try {
+        // Skip deduction processing for excluded staff
+        if (staffMember.payroll?.excludeFromDeductions) {
+          processedCount++;
+          continue;
+        }
+
         const memberAttendance = finalAttendance.filter(
           r => r.employeeId?.toString() === staffMember.employeeId?.toString()
         );

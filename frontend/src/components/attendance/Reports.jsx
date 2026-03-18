@@ -37,8 +37,10 @@ const ReportRow = memo(({ record, getStaffName, getStaffPosition }) => {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', weekday: 'short' });
   };
 
+  const rowBg = record.absent ? 'bg-red-50' : record.late ? 'bg-amber-50' : record.earlyLeave ? 'bg-orange-50/60' : '';
+
   return (
-    <tr className="hover:bg-gradient-to-r hover:from-blue-50 hover:to-indigo-50 transition-all duration-200 border-b border-gray-100">
+    <tr className={`${rowBg} hover:brightness-95 transition-all duration-200 border-b border-gray-100`}>
       <td className="px-2 sm:px-3 py-3 text-xs sm:text-sm"><div className="font-medium text-gray-900">{formatDate(record.date)}</div></td>
       <td className="px-2 sm:px-4 py-3 text-xs sm:text-sm">
         <div className="flex items-center space-x-2">

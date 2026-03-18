@@ -74,6 +74,7 @@ function StaffPayrollModal({
         nhis: staff.payroll?.exemptions?.nhis || false
       },
       overtimeEligible: staff.payroll?.overtimeEligible !== false,
+      excludeFromDeductions: staff.payroll?.excludeFromDeductions || false,
       paymentMethod: staff.payroll?.paymentMethod || 'bank_transfer',
       notes: staff.payroll?.notes || '',
       // NTA 2025 annual tax reliefs — all values in Naira per annum
@@ -534,6 +535,15 @@ function StaffPayrollModal({
                 description="This staff can receive overtime payments"
                 checked={formData.payroll.overtimeEligible}
                 onChange={(checked) => updateField('payroll.overtimeEligible', checked)}
+              />
+
+              <FormDivider />
+
+              <SettingsToggle
+                label="Exclude from Attendance Deductions"
+                description="Payroll is processed normally but absences, lateness, and early leave are not deducted. Use for staff who don't clock in/out."
+                checked={formData.payroll.excludeFromDeductions}
+                onChange={(checked) => updateField('payroll.excludeFromDeductions', checked)}
               />
 
               <FormDivider />

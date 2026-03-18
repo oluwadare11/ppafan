@@ -196,6 +196,9 @@ const staffSchema = new mongoose.Schema({
       voluntaryPensionAVC:    { type: Number, default: 0 }  // Voluntary Additional Voluntary Contributions
     },
 
+    // Exclude from attendance deduction calculations (e.g. management/directors who don't clock in)
+    excludeFromDeductions: { type: Boolean, default: false },
+
     // Overtime eligibility
     overtimeEligible: { type: Boolean, default: true },
 
