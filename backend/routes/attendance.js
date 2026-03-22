@@ -2438,7 +2438,19 @@ router.post('/recalculate', async (req, res) => {
           adjustmentNote: { $not: { $regex: /Automatically detected/i } }
         }));
       }
-      if (isHoliday) { stats.skipped += allStaff.length; continue; }
+      if (isHoliday) {
+        // Delete any auto-generated absence records for this now-holiday date
+        await TenantAttendance.deleteMany({
+          tenantId: req.tenantId,
+          date: dateStr,
+          absent: true,
+          checkIn: null,
+          checkOut: null,
+          adjustmentNote: { $not: /^Manual entry/ }
+        });
+        stats.skipped += allStaff.length;
+        continue;
+      }
 
       // Date as Date object for leave range queries
       const dateObj = new Date(dateStr + 'T12:00:00+01:00');
