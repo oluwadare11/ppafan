@@ -1736,35 +1736,66 @@ router.get('/shifts', async (req, res) => {
 // FIXED: Manual Holiday Management Only - No Auto-Detection with tenant isolation
 router.post('/holidays', async (req, res) => {
   try {
-    const { name, date } = req.body;
+    const { name, startDate, endDate, date } = req.body;
 
-    if (!name || !date) {
+    // Support legacy single-date and new startDate/endDate range
+    const start = startDate || date;
+    const end = endDate || start;
+
+    if (!name || !start) {
       return res.status(400).json({ error: 'MISSING_REQUIRED_FIELDS', message: 'Holiday name and date are required' });
     }
 
     const TenantHoliday = req.getTenantModel('Holiday');
     if (!TenantHoliday) return res.status(500).json({ error: 'MODEL_UNAVAILABLE', message: 'Holiday model not available' });
 
-    const holidayDate = new Date(date);
-    const year = holidayDate.getFullYear();
-    const dateStr = getLagosDateString(holidayDate);
+    const startD = new Date(start + 'T12:00:00');
+    const endD = new Date(end + 'T12:00:00');
 
-    const exists = await TenantHoliday.findOne({ tenantId: req.tenantId, date: dateStr });
-    if (exists) return res.status(400).json({ error: 'HOLIDAY_EXISTS', message: 'Holiday already exists for this date' });
+    if (isNaN(startD) || isNaN(endD)) {
+      return res.status(400).json({ error: 'INVALID_DATE', message: 'Invalid date format' });
+    }
+    if (endD < startD) {
+      return res.status(400).json({ error: 'INVALID_DATE_RANGE', message: 'End date must be on or after start date' });
+    }
 
-    const holiday = await TenantHoliday.create({
-      tenantId: req.tenantId,
-      name,
-      date: dateStr,
-      year,
-      createdBy: req.user.username
-    });
+    // Build array of YYYY-MM-DD strings for each day in range
+    const dates = [];
+    const cur = new Date(startD);
+    while (cur <= endD) {
+      dates.push(getLagosDateString(new Date(cur)));
+      cur.setDate(cur.getDate() + 1);
+    }
 
-    logger.info('Holiday created', { tenantId: req.tenantId, name, date: dateStr, createdBy: req.user.username });
+    const createdHolidays = [];
+    const skipped = [];
+
+    for (const dateStr of dates) {
+      const year = parseInt(dateStr.split('-')[0]);
+      const exists = await TenantHoliday.findOne({ tenantId: req.tenantId, date: dateStr });
+      if (exists) { skipped.push(dateStr); continue; }
+
+      const holiday = await TenantHoliday.create({
+        tenantId: req.tenantId,
+        name,
+        date: dateStr,
+        year,
+        createdBy: req.user.username
+      });
+      createdHolidays.push({ _id: holiday._id, name: holiday.name, date: holiday.date, year: holiday.year });
+    }
+
+    if (createdHolidays.length === 0) {
+      return res.status(400).json({ error: 'HOLIDAY_EXISTS', message: 'Holiday(s) already exist for all selected dates' });
+    }
+
+    logger.info('Holiday(s) created', { tenantId: req.tenantId, name, count: createdHolidays.length, createdBy: req.user.username });
     res.status(201).json({
       success: true,
-      message: 'Holiday created successfully',
-      holiday: { _id: holiday._id, name: holiday.name, date: holiday.date, year: holiday.year }
+      message: `${createdHolidays.length} holiday(s) created successfully`,
+      holidays: createdHolidays,
+      holiday: createdHolidays[0],
+      skipped
     });
 
   } catch (err) {

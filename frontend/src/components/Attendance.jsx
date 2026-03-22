@@ -225,7 +225,7 @@ function Attendance() {
   });
   const [newLeave, setNewLeave] = useState({ employeeId: '', startDate: '', endDate: '', reason: '' });
   const [editingLeave, setEditingLeave] = useState(null);
-  const [newHoliday, setNewHoliday] = useState({ name: '', date: '' });
+  const [newHoliday, setNewHoliday] = useState({ name: '', startDate: '', endDate: '' });
   const [manualEntry, setManualEntry] = useState({
     employeeId: '',
     date: '',
@@ -1149,31 +1149,34 @@ function Attendance() {
   // FIXED: Holiday management handlers using tenant-aware API
   const handleAddHoliday = useCallback(async (e) => {
     e.preventDefault();
-    
-    if (!newHoliday.name || !newHoliday.date) {
-      setError('Holiday name and date are required');
+
+    if (!newHoliday.name || !newHoliday.startDate) {
+      setError('Holiday name and start date are required');
       return;
     }
-    
+
     try {
       setActionLoading(true);
-      
+
       const response = await makeRequest('/api/attendance/holidays', {
         method: 'POST',
         body: JSON.stringify({
           name: newHoliday.name.trim(),
-          date: newHoliday.date
+          startDate: newHoliday.startDate,
+          endDate: newHoliday.endDate || newHoliday.startDate
         })
       });
-      
-      setHolidays(prevHolidays => [...prevHolidays, response]);
-      
-      setNewHoliday({ name: '', date: '' });
-      
-      setSuccess('Holiday added successfully!');
+
+      const added = response.holidays || (response.holiday ? [response.holiday] : []);
+      setHolidays(prevHolidays => [...prevHolidays, ...added]);
+
+      setNewHoliday({ name: '', startDate: '', endDate: '' });
+
+      const count = added.length;
+      setSuccess(`${count} holiday${count !== 1 ? 's' : ''} added successfully!`);
       setTimeout(() => setSuccess(''), 3000);
       setError('');
-      
+
     } catch (err) {
       console.error('Failed to add holiday:', err);
       const errorMessage = err.message || 'Failed to add holiday';

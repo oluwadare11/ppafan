@@ -9,6 +9,9 @@ const HolidayLeave = ({
   handleDeleteHoliday,
   loading,
 }) => {
+  const formatDate = (dateStr) =>
+    new Date(dateStr + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
   return (
     <div className="space-y-4 sm:space-y-6">
       <div className="bg-white rounded-xl shadow-lg overflow-hidden">
@@ -25,7 +28,7 @@ const HolidayLeave = ({
           {/* Add Holiday Form */}
           <form onSubmit={handleAddHoliday} className="mb-6 p-4 bg-purple-50 border border-purple-200 rounded-xl">
             <h4 className="text-sm font-semibold text-gray-700 mb-3">Add New Holiday</h4>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
                   Holiday Name <span className="text-red-500">*</span>
@@ -42,14 +45,27 @@ const HolidayLeave = ({
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1.5">
-                  Date <span className="text-red-500">*</span>
+                  Start Date <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="date"
-                  value={newHoliday.date}
-                  onChange={(e) => setNewHoliday({ ...newHoliday, date: e.target.value })}
+                  value={newHoliday.startDate}
+                  onChange={(e) => setNewHoliday({ ...newHoliday, startDate: e.target.value, endDate: newHoliday.endDate || e.target.value })}
                   className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
                   required
+                  disabled={loading}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                  End Date <span className="text-gray-400 font-normal text-xs">(multi-day)</span>
+                </label>
+                <input
+                  type="date"
+                  value={newHoliday.endDate}
+                  min={newHoliday.startDate}
+                  onChange={(e) => setNewHoliday({ ...newHoliday, endDate: e.target.value })}
+                  className="w-full px-3 py-2.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 focus:border-purple-500"
                   disabled={loading}
                 />
               </div>
@@ -70,9 +86,7 @@ const HolidayLeave = ({
                 <div key={holiday._id} className="bg-white border border-gray-200 rounded-lg p-3 flex items-center justify-between">
                   <div>
                     <div className="font-medium text-gray-900 text-sm">{holiday.name}</div>
-                    <div className="text-xs text-gray-500">
-                      {new Date(holiday.date + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
-                    </div>
+                    <div className="text-xs text-gray-500">{formatDate(holiday.date)}</div>
                   </div>
                   <button
                     onClick={() => { if (window.confirm('Delete this holiday?')) handleDeleteHoliday(holiday._id); }}
@@ -117,11 +131,7 @@ const HolidayLeave = ({
                         <div className="text-sm font-medium text-gray-900">{holiday.name}</div>
                       </td>
                       <td className="px-4 py-3 whitespace-nowrap">
-                        <div className="text-sm text-gray-900">
-                          {new Date(holiday.date + 'T00:00:00').toLocaleDateString('en-US', {
-                            year: 'numeric', month: 'short', day: 'numeric',
-                          })}
-                        </div>
+                        <div className="text-sm text-gray-900">{formatDate(holiday.date)}</div>
                       </td>
                       <td className="hidden md:table-cell px-4 py-3 whitespace-nowrap">
                         <div className="text-sm text-gray-900">{holiday.year || new Date(holiday.date + 'T00:00:00').getFullYear()}</div>
