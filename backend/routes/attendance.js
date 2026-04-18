@@ -502,10 +502,10 @@ router.get('/live', async (req, res) => {
     // Enrich logs with staff information
     const enrichedLogs = [];
     for (const log of logs) {
-      const staff = await TenantStaff.findOne({ 
-        employeeId: log.employeeId,
-        tenantId: req.tenantId,
-        employeeId: { $not: /^CONFIG_/ }
+      const paddedId = log.employeeId.padStart(4, '0');
+      const staff = await TenantStaff.findOne({
+        employeeId: { $in: [log.employeeId, paddedId], $not: /^CONFIG_/ },
+        tenantId: req.tenantId
       }).lean();
       
       const enrichedLog = {
@@ -937,9 +937,10 @@ router.get('/analytics', async (req, res) => {
       }
     }
 
-    // FIXED: Get all staff with proper tenant filtering
+    // Get active staff only (inactive staff are hidden from attendance views)
     const allStaff = await TenantStaff.find({
       tenantId: req.tenantId,
+      status: 'active',
       employeeId: { $not: /^CONFIG_/ }
     }).lean();
     const totalStaff = allStaff.length;

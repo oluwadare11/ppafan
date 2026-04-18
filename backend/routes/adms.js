@@ -1544,12 +1544,13 @@ async function processSingleScan(scan, tenantId) {
   }
 
   // ENHANCED: Find staff with proper tenant filtering
-  // FIX: Use $and to combine employeeId conditions (duplicate keys overwrite each other!)
+  // Also try zero-padded ID to handle devices that strip leading zeros (101 → 0101)
+  const paddedId = employeeId.padStart(4, '0');
   const staff = await Staff.findOne({
-    employeeId: employeeId,
+    employeeId: { $in: [employeeId, paddedId] },
     tenantId: tenantId
   });
-  
+
   if (!staff) {
     scan.determinedType = 'ignored';
     scan.processingNote = 'Staff not found';
@@ -1561,6 +1562,14 @@ async function processSingleScan(scan, tenantId) {
     });
     return;
   }
+
+  // Normalize employeeId to canonical DB value (handles device stripping leading zeros)
+  const canonicalEmployeeId = staff.employeeId;
+  if (canonicalEmployeeId !== employeeId) {
+    logger.info('Normalized employeeId from device PIN', { tenantId, devicePin: employeeId, canonicalId: canonicalEmployeeId });
+  }
+  // Use canonical ID for all subsequent attendance lookups and record creation
+  const resolvedEmployeeId = canonicalEmployeeId;
 
   // Skip CONFIG_ records (system configuration, not real staff)
   if (staff.employeeId && staff.employeeId.startsWith('CONFIG_')) {
@@ -1596,7 +1605,7 @@ async function processSingleScan(scan, tenantId) {
   }
 
   // Staff has a shift - now check for holidays and approved leave
-  const holidayLeaveCheck = await isHolidayOrLeave(timestamp, employeeId, tenantId);
+  const holidayLeaveCheck = await isHolidayOrLeave(timestamp, resolvedEmployeeId, tenantId);
   if (holidayLeaveCheck.isNonWorking) {
     scan.determinedType = 'ignored';
     scan.processingNote = holidayLeaveCheck.reason;
@@ -1639,8 +1648,8 @@ async function processSingleScan(scan, tenantId) {
   const dateStr = getLagosDateString(timestamp);
 
   // ENHANCED: Find existing attendance with proper tenant filtering
-  const existingAttendance = await Attendance.findOne({ 
-    employeeId: employeeId,
+  const existingAttendance = await Attendance.findOne({
+    employeeId: resolvedEmployeeId,
     date: dateStr,
     tenantId: tenantId
   });
@@ -1713,7 +1722,7 @@ async function processSingleScan(scan, tenantId) {
       employeeId,
       type: determinedType
     });
-    await updateAttendanceRecord(employeeId, timestamp, determinedType, staff, scan._id, tenantId);
+    await updateAttendanceRecord(resolvedEmployeeId, timestamp, determinedType, staff, scan._id, tenantId);
   }
 
   logger.debug('Scan processed successfully', {
@@ -2115,12 +2124,13 @@ router.get('/attendance-summary', async (req, res) => {
       }
     }
 
-    // ENHANCED: Get staff with proper tenant filtering
-    const allStaff = await TenantStaff.find({ 
+    // Get active staff only (inactive staff are hidden from attendance views)
+    const allStaff = await TenantStaff.find({
       tenantId: req.tenantId,
+      status: 'active',
       employeeId: { $not: /^CONFIG_/ }
     }).lean();
-    
+
     const staffMap = {};
     allStaff.forEach(staff => {
       staffMap[staff.employeeId] = {
