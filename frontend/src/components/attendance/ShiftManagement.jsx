@@ -491,7 +491,7 @@ const ShiftManagement = ({
   const daysShort = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 
   return (
-    <div className="space-y-4 sm:space-y-6 max-w-7xl mx-auto px-2 sm:px-4">
+    <div className="space-y-4 sm:space-y-6 w-full">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
         <div>

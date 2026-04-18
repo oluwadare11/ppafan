@@ -322,7 +322,7 @@ const Settings = () => {
   }
 
   return (
-    <div className="p-3 sm:p-4 lg:p-6 bg-gray-50 min-h-screen">
+    <div className="w-full px-3 sm:px-5 lg:px-8 py-4 sm:py-6 lg:py-8 bg-gray-50 min-h-screen">
       {/* Header */}
       <div className="mb-4 sm:mb-6">
         <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-gray-900">Settings</h1>

@@ -660,9 +660,11 @@ router.post('/process/generate', async (req, res) => {
 
     for (const staffMember of staff) {
       try {
-        const memberAttendance = attendanceRecords.filter(
-          r => r.employeeId?.toString() === staffMember.employeeId?.toString()
-        );
+        const memberAttendance = staffMember.payroll?.excludeFromDeductions
+          ? []
+          : attendanceRecords.filter(
+              r => r.employeeId?.toString() === staffMember.employeeId?.toString()
+            );
 
         const attendanceData = memberAttendance.map(r => ({
           date:              r.date,

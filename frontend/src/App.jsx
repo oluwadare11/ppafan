@@ -237,7 +237,7 @@ const AppRoutes = memo(() => {
   }
 
   return (
-    <div className="flex min-h-screen w-full">
+    <div className="min-h-screen bg-gray-50">
       {/* Mobile Menu Button */}
       {showSidebar && (
         <button
@@ -258,8 +258,8 @@ const AppRoutes = memo(() => {
         </Suspense>
       )}
 
-      {/* Main Content - Single Suspense around all Routes for consistent behavior */}
-      <main className={`flex-1 w-full transition-all duration-300 ${showSidebar ? "md:ml-64" : "ml-0"}`}>
+      {/* Main Content - block element fills width minus sidebar margin */}
+      <main className={`min-h-screen transition-all duration-300 ${showSidebar ? "md:ml-60" : ""}`}>
         <Suspense fallback={<LazyLoadSpinner />}>
           <Routes>
             {/* Public Routes */}

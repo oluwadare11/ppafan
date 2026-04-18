@@ -93,7 +93,7 @@ const shiftSchema = new mongoose.Schema({
 // Unique only for permanent shifts (temp shifts can overlap dayOfWeek)
 shiftSchema.index(
   { tenantId: 1, staffId: 1, dayOfWeek: 1 },
-  { unique: true, partialFilterExpression: { shiftType: { $ne: 'temporary' } } }
+  { unique: true, partialFilterExpression: { shiftType: { $eq: 'permanent' } } }
 );
 shiftSchema.index({ tenantId: 1, dayOfWeek: 1 });
 shiftSchema.index({ tenantId: 1, isActive: 1 });

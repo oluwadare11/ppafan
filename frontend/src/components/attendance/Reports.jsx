@@ -845,7 +845,7 @@ currentY += 10;
   }, [analytics]);
 
   return (
-    <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-6 space-y-6">
+    <div className="w-full space-y-6">
       {/* PDF Generation Overlay */}
       {generatingPDF && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">

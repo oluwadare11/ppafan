@@ -128,6 +128,7 @@ const payrollSchema = new mongoose.Schema({
       enabled:                     { type: Boolean, default: false },
       grossAnnualIncome:           { type: Number, default: 0 },
       consolidatedReliefAllowance: { type: Number, default: 0 },
+      preTaxDeductions:            { type: Number, default: 0 },
       taxableIncome:               { type: Number, default: 0 },
       annualTax:                   { type: Number, default: 0 },
       monthlyTax:                  { type: Number, default: 0 },

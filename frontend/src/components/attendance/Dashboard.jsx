@@ -228,7 +228,7 @@ const Dashboard = memo(({
   }, [attendanceRecords, activeStaffIds]);
 
   return (
-    <div className="max-w-7xl mx-auto px-2 sm:px-4 lg:px-6 space-y-6">
+    <div className="w-full space-y-6">
 
       
       {/* UPDATED: Dashboard Stats Cards with "Not Yet Clocked In" category */}

@@ -1284,8 +1284,8 @@ function Attendance() {
 
   // Main render - page loads immediately with default data
   return (
-    <div className="min-h-screen bg-gray-50 overflow-x-hidden">
-      <div className="max-w-full lg:max-w-7xl mx-auto px-2 sm:px-4 lg:px-6 xl:px-8 py-4 sm:py-6 lg:py-8 space-y-4 sm:space-y-6 lg:space-y-8 overflow-x-hidden">
+    <div className="min-h-screen bg-gray-50">
+      <div className="w-full px-3 sm:px-5 lg:px-8 py-4 sm:py-6 lg:py-8 space-y-4 sm:space-y-6 lg:space-y-8">
         <div className="mb-4 sm:mb-6 lg:mb-8">
           <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
             <div>
