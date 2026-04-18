@@ -642,9 +642,10 @@ router.post('/process/generate', async (req, res) => {
     const existingRecordMap = {};
     existingRecords.forEach(r => { existingRecordMap[r.employeeNumber] = r; });
 
-    // Pre-fetch permanent shifts for per-staff working hours
+    // Pre-fetch ALL permanent shifts for per-staff working hours AND shift-day counting
     const allEmployeeIds = staff.map(s => s.employeeId);
-    const shiftByEmployee = {};
+    const shiftByEmployee = {};       // first shift per employee (for working hours)
+    const allShiftsByEmployee = {};   // all shifts per employee (for day counting)
     try {
       const allShifts = await Shift.find({
         employeeId: { $in: allEmployeeIds },
@@ -653,8 +654,27 @@ router.post('/process/generate', async (req, res) => {
       }).lean();
       allShifts.forEach(shift => {
         if (!shiftByEmployee[shift.employeeId]) shiftByEmployee[shift.employeeId] = shift;
+        if (!allShiftsByEmployee[shift.employeeId]) allShiftsByEmployee[shift.employeeId] = [];
+        allShiftsByEmployee[shift.employeeId].push(shift);
       });
     } catch (_) {}
+
+    // Count how many days in the pay period a staff member has a scheduled shift.
+    // Returns the global workingDays if the staff has no shifts configured.
+    const countStaffShiftDays = (employeeId) => {
+      const empShifts = allShiftsByEmployee[employeeId];
+      if (!empShifts || empShifts.length === 0) return workingDays;
+      const shiftDays = new Set(empShifts.map(s => s.dayOfWeek));
+      const dayNames  = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      let count = 0;
+      const d   = new Date(startDate + 'T12:00:00Z');
+      const end = new Date(endDate   + 'T12:00:00Z');
+      while (d <= end) {
+        if (shiftDays.has(dayNames[d.getDay()])) count++;
+        d.setDate(d.getDate() + 1);
+      }
+      return count > 0 ? count : workingDays; // fallback if no days matched
+    };
 
     const results = { success: 0, failed: 0, errors: [], payrollRecords: [] };
 
@@ -682,9 +702,12 @@ router.post('/process/generate', async (req, res) => {
 
         const staffLoans = activeLoans.filter(l => l.employeeNumber === staffMember.employeeId);
 
+        // Staff-specific working days: count only days they have shifts in this period
+        const staffWorkingDays = countStaffShiftDays(staffMember.employeeId);
+
         const employeeLeave = unpaidLeaveMap[staffMember.employeeId] || {};
         const unpaidDays    = employeeLeave.unpaidDays || 0;
-        const dailyRate     = staffMember.baseSalary ? staffMember.baseSalary / workingDays : 0;
+        const dailyRate     = staffMember.baseSalary ? staffMember.baseSalary / staffWorkingDays : 0;
         const leaveData     = { unpaidDays, unpaidDeduction: Math.round(unpaidDays * dailyRate) };
 
         // Derive working hours from permanent shift if available
@@ -708,7 +731,7 @@ router.post('/process/generate', async (req, res) => {
           overtimeRecords: existingOvertime.breakdown || [],
           leaveData,
           period,
-          workingDays,
+          workingDays:     staffWorkingDays,   // use staff-specific shift-day count
           staffCount:      staff.length
         });
 
@@ -855,7 +878,8 @@ router.post('/process/generate', async (req, res) => {
             lateMinutes:         payrollResult.attendanceData.lateMinutes   || 0,
             earlyLeaveMinutes:   payrollResult.attendanceData.earlyLeaveMinutes || 0,
             actualWorkingDays:   payrollResult.attendanceData.recordCount   || 0,
-            standardWorkingDays: workingDays
+            standardWorkingDays: staffWorkingDays,
+            orgWorkingDays:      workingDays
           },
 
           payrollSummary: {

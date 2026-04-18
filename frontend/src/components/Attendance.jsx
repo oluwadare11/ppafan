@@ -493,11 +493,12 @@ function Attendance() {
       const response = await makeRequest('/api/staff');
       const staffData = response.staff || response || [];
       setStaff(staffData);
-      
+
+      const activeCount = staffData.filter(s => s.status === 'active').length;
       setDashboardStats(prev => ({
         ...prev,
-        totalStaff: staffData.length,
-        absentToday: staffData.length
+        totalStaff: activeCount,
+        absentToday: activeCount
       }));
       
       return staffData;
@@ -632,7 +633,7 @@ function Attendance() {
       return;
     }
 
-    const totalStaff = staffData.length;
+    const totalStaff = staffData.filter(s => s.status === 'active').length;
     const todayRecords = attendanceData.filter(record => {
       if (!record) return false;
       const dateStr = record.date || (record.timestamp && isValidDate(record.timestamp)

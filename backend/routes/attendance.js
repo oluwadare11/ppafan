@@ -617,19 +617,43 @@ router.get('/report', async (req, res) => {
 
     console.log('Final attendance query:', query);
 
+    // Pre-fetch active staff in ONE query — build a map for O(1) lookup
+    const activeStaff = await TenantStaff.find({
+      tenantId: req.tenantId,
+      status: 'active',
+      employeeId: { $not: /^CONFIG_/ }
+    }, '_id firstName lastName department position employeeId').lean();
+    const staffMap = new Map(activeStaff.map(s => [s.employeeId, s]));
+
+    // Pre-fetch holidays for the date range in ONE query — build a Set for O(1) lookup
+    const TenantHoliday = req.getTenantModel('Holiday');
+    const holidayDates = new Set();
+    if (TenantHoliday) {
+      const holidays = await TenantHoliday.find({ tenantId: req.tenantId, ...dateFilter }).lean();
+      holidays.forEach(h => holidayDates.add(h.date));
+    }
+    const legacyHolidays = await TenantAttendance.find({
+      tenantId: req.tenantId,
+      employeeId: 'HOLIDAY',
+      ...dateFilter,
+      adjustmentNote: { $not: /Automatically detected/i }
+    }).lean();
+    legacyHolidays.forEach(h => holidayDates.add(h.date));
+
     // Get all records that match the filter
     const allRecords = await TenantAttendance.find(query).lean();
-    
-    // Filter out Sunday and manual holiday records only
-    const filteredRecords = [];
-    for (const record of allRecords) {
-      const recordDate = new Date(record.date + 'T00:00:00.000Z');
-      
-      // Use consistent working day check (manual holidays only)
-      if (await isWorkingDay(recordDate, req)) {
-        filteredRecords.push(record);
-      }
-    }
+
+    // Filter synchronously — no DB calls in loop
+    const filteredRecords = allRecords.filter(record => {
+      // Only show active staff records
+      if (!staffMap.has(record.employeeId)) return false;
+      // Skip holidays
+      if (holidayDates.has(record.date)) return false;
+      // Skip Sundays
+      const dow = new Date(record.date + 'T12:00:00.000Z').getDay();
+      if (dow === 0) return false;
+      return true;
+    });
 
     // Apply pagination to filtered records
     const startIndex = (page - 1) * limit;
@@ -637,21 +661,11 @@ router.get('/report', async (req, res) => {
       .sort((a, b) => b.date.localeCompare(a.date))
       .slice(startIndex, startIndex + Number(limit));
 
-    console.log(`Found ${paginatedRecords.length} attendance records (after filtering) for tenant: ${req.tenantId}`);
-
-    // Enrich with staff information and formatting
-    const enrichedRecords = [];
-    for (const record of paginatedRecords) {
-      const staff = await TenantStaff.findOne({ 
-        employeeId: record.employeeId,
-        tenantId: req.tenantId,
-        employeeId: { $not: /^CONFIG_/ }
-      }).lean();
-      
-      // Enhanced record with proper time formatting
-      const enrichedRecord = {
+    // Enrich from staffMap — zero additional DB queries
+    const enrichedRecords = paginatedRecords.map(record => {
+      const staff = staffMap.get(record.employeeId) || null;
+      return {
         ...record,
-        // Add formatted time displays for frontend
         lateDisplay: record.late ? formatMinutesToHoursAndMinutes(record.lateMinutes || 0) : null,
         earlyLeaveDisplay: record.earlyLeave ? formatMinutesToHoursAndMinutes(record.earlyLeaveMinutes || 0) : null,
         overtimeDisplay: record.overtimeHours > 0 ? formatMinutesToHoursAndMinutes(Math.round(record.overtimeHours * 60)) : null,
@@ -664,13 +678,9 @@ router.get('/report', async (req, res) => {
           employeeId: staff.employeeId
         } : null
       };
-      
-      enrichedRecords.push(enrichedRecord);
-    }
+    });
 
     const total = filteredRecords.length;
-
-    console.log(`Returning ${enrichedRecords.length} enriched records, total: ${total} for tenant: ${req.tenantId}`);
 
     // Return data in format expected by frontend
     res.json({
@@ -920,22 +930,32 @@ router.get('/analytics', async (req, res) => {
     const startDateStr = getLagosDateString(start);
     const endDateStr = getLagosDateString(end);
 
-    // FIXED: Get attendance records for the period with proper tenant filtering
-    const allRecords = await TenantAttendance.find({
-      tenantId: req.tenantId, // CRITICAL: Tenant filtering
+    // Pre-fetch holidays for date range in ONE query
+    const TenantHolidayA = req.getTenantModel('Holiday');
+    const analyticsHolidayDates = new Set();
+    if (TenantHolidayA) {
+      const hols = await TenantHolidayA.find({ tenantId: req.tenantId, date: { $gte: startDateStr, $lte: endDateStr } }).lean();
+      hols.forEach(h => analyticsHolidayDates.add(h.date));
+    }
+    const legacyHols = await TenantAttendance.find({
+      tenantId: req.tenantId, employeeId: 'HOLIDAY',
       date: { $gte: startDateStr, $lte: endDateStr },
-      employeeId: { $nin: ['HOLIDAY', /^LEAVE_/] } // Exclude both holidays and leave records
+      adjustmentNote: { $not: /Automatically detected/i }
+    }).lean();
+    legacyHols.forEach(h => analyticsHolidayDates.add(h.date));
+
+    // Get attendance records — filter synchronously
+    const allRecords = await TenantAttendance.find({
+      tenantId: req.tenantId,
+      date: { $gte: startDateStr, $lte: endDateStr },
+      employeeId: { $nin: ['HOLIDAY', /^LEAVE_/] }
     }).lean();
 
-    const attendanceRecords = [];
-    for (const record of allRecords) {
-      const recordDate = new Date(record.date);
-      
-      // Use consistent working day check (manual holidays only)
-      if (await isWorkingDay(recordDate, req)) {
-        attendanceRecords.push(record);
-      }
-    }
+    const attendanceRecords = allRecords.filter(record => {
+      if (analyticsHolidayDates.has(record.date)) return false;
+      const dow = new Date(record.date + 'T12:00:00.000Z').getDay();
+      return dow !== 0; // skip Sundays
+    });
 
     // Get active staff only (inactive staff are hidden from attendance views)
     const allStaff = await TenantStaff.find({
@@ -2400,7 +2420,7 @@ router.post('/recalculate', async (req, res) => {
     }
 
     // Get active staff (optionally filtered by staffIds array)
-    const staffQuery = { tenantId: req.tenantId, isActive: true };
+    const staffQuery = { tenantId: req.tenantId, status: 'active', employeeId: { $not: /^CONFIG_/ } };
     if (staffIds && Array.isArray(staffIds) && staffIds.length > 0) {
       staffQuery.employeeId = { $in: staffIds };
     }

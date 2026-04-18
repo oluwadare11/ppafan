@@ -2073,13 +2073,28 @@ router.get('/attendance-summary', async (req, res) => {
       employeeId: { $nin: ['HOLIDAY', /^LEAVE_/] }
     }).lean();
 
-    const attendanceRecords = [];
-    for (const record of allRecords) {
-      const recordDate = new Date(record.date);
-      if (await isWorkingDay(recordDate, req.tenantId)) {
-        attendanceRecords.push(record);
-      }
+    // Pre-fetch holiday dates once — filter synchronously
+    const TenantHolidaySummary = req.getTenantModel('Holiday');
+    const summaryHolidayDates = new Set();
+    if (TenantHolidaySummary) {
+      const hols = await TenantHolidaySummary.find({
+        tenantId: req.tenantId,
+        date: { $gte: getLagosDateString(dateRangeStart), $lte: getLagosDateString(dateRangeEnd) }
+      }).lean();
+      hols.forEach(h => summaryHolidayDates.add(h.date));
     }
+    const legacyHolsSummary = await TenantAttendance.find({
+      tenantId: req.tenantId, employeeId: 'HOLIDAY',
+      date: { $gte: getLagosDateString(dateRangeStart), $lte: getLagosDateString(dateRangeEnd) },
+      adjustmentNote: { $not: /Automatically detected/i }
+    }).lean();
+    legacyHolsSummary.forEach(h => summaryHolidayDates.add(h.date));
+
+    const attendanceRecords = allRecords.filter(record => {
+      if (summaryHolidayDates.has(record.date)) return false;
+      const dow = new Date(record.date + 'T12:00:00.000Z').getDay();
+      return dow !== 0;
+    });
 
     // Enhanced logs with tenant filtering
     const attendanceLogs = TenantAttendanceLog ? await TenantAttendanceLog.find({
