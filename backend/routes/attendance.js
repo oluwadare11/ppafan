@@ -610,9 +610,10 @@ router.get('/report', async (req, res) => {
     }
 
     // Exclude holidays and special records consistently
-    query.employeeId = { 
-      ...query.employeeId, 
-      $nin: ['HOLIDAY', /^LEAVE_/] // Exclude both holidays and leave records
+    query.employeeId = {
+      ...query.employeeId,
+      $nin: ['HOLIDAY'],
+      $not: /^LEAVE_/
     };
 
     console.log('Final attendance query:', query);
@@ -948,7 +949,7 @@ router.get('/analytics', async (req, res) => {
     const allRecords = await TenantAttendance.find({
       tenantId: req.tenantId,
       date: { $gte: startDateStr, $lte: endDateStr },
-      employeeId: { $nin: ['HOLIDAY', /^LEAVE_/] }
+      employeeId: { $nin: ['HOLIDAY'], $not: /^LEAVE_/ }
     }).lean();
 
     const attendanceRecords = allRecords.filter(record => {
@@ -984,7 +985,7 @@ router.get('/analytics', async (req, res) => {
       const todayRecords = await TenantAttendance.find({ 
         tenantId: req.tenantId, // CRITICAL: Tenant filtering
         date: today,
-        employeeId: { $nin: ['HOLIDAY', /^LEAVE_/] } // Exclude special records
+        employeeId: { $nin: ['HOLIDAY'], $not: /^LEAVE_/ }
       }).lean();
       
       todayStats = {

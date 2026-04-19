@@ -550,7 +550,7 @@ function Attendance() {
     }
   }, [makeRequest]);
 
-  // FIXED: Optimized attendance summary fetcher using tenant-aware API
+  // Dashboard attendance fetcher — always fetches TODAY in Lagos timezone
   const fetchAttendanceSummary = useCallback(async () => {
     try {
       const now = Date.now();
@@ -558,22 +558,11 @@ function Attendance() {
         return;
       }
 
-      const params = { mode: reportMode, page: reportPage };
-      if (reportMode === 'day') {
-        params.startDate = filterDate;
-      } else if (reportMode === 'custom') {
-        params.startDate = customStartDate;
-        params.endDate = customEndDate;
-      } else {
-        params.startDate = new Date().toISOString().split('T')[0];
-      }
-
-      const queryString = new URLSearchParams(params).toString();
+      const todayLagos = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+      const queryString = new URLSearchParams({ mode: 'day', startDate: todayLagos }).toString();
       const response = await makeRequest(`/api/adms/attendance-summary?${queryString}`, {
         method: 'GET',
-        headers: {
-          'Content-Type': 'application/json'
-        }
+        headers: { 'Content-Type': 'application/json' }
       });
       
       const records = response.records || [];
@@ -1343,68 +1332,22 @@ function Attendance() {
         )}
 
         <div className="sticky top-0 z-10 bg-white shadow-lg rounded-xl mb-4 sm:mb-6 lg:mb-8">
-          <div className="flex items-center justify-between px-2 sm:px-4 h-12 sm:h-14 lg:h-16">
-            {/* Desktop Navigation */}
-            <div className="hidden md:flex space-x-1 lg:space-x-2 overflow-x-auto">
-              {sidebarItems.map((item) => (
-                <button
-                  key={item.id}
-                  onClick={() => setActiveSection(item.id)}
-                  className={`flex items-center gap-1.5 lg:gap-2 px-2 lg:px-4 py-1.5 lg:py-2 text-xs lg:text-sm font-medium rounded-lg transition-colors whitespace-nowrap ${
-                    activeSection === item.id
-                      ? 'bg-blue-600 text-white shadow-md'
-                      : 'text-gray-600 hover:bg-gray-100'
-                  }`}
-                >
-                  <item.icon className="text-base lg:text-lg flex-shrink-0" />
-                  <span className="hidden lg:inline">{item.label}</span>
-                  <span className="lg:hidden">{item.label.split(' ')[0]}</span>
-                </button>
-              ))}
-            </div>
-
-            {/* Mobile Navigation Toggle */}
-            <div className="md:hidden flex items-center justify-between w-full">
-              <span className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-                {sidebarItems.find(item => item.id === activeSection)?.icon &&
-                  React.createElement(sidebarItems.find(item => item.id === activeSection).icon, { className: "text-blue-600" })}
-                {sidebarItems.find(item => item.id === activeSection)?.label}
-              </span>
+          <div className="flex items-center overflow-x-auto px-2 sm:px-3 h-12 sm:h-14 lg:h-16 gap-1 lg:gap-2 scrollbar-hide">
+            {sidebarItems.map((item) => (
               <button
-                onClick={() => setIsNavOpen(!isNavOpen)}
-                className="p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+                key={item.id}
+                onClick={() => setActiveSection(item.id)}
+                className={`flex items-center gap-1 sm:gap-1.5 lg:gap-2 px-2 sm:px-3 lg:px-4 py-1.5 lg:py-2 text-xs sm:text-xs lg:text-sm font-medium rounded-lg transition-colors whitespace-nowrap flex-shrink-0 ${
+                  activeSection === item.id
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'text-gray-600 hover:bg-gray-100'
+                }`}
               >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d={isNavOpen ? 'M6 18L18 6M6 6l12 12' : 'M4 6h16M4 12h16m-7 6h7'} />
-                </svg>
+                <item.icon className="text-sm sm:text-base lg:text-lg flex-shrink-0" />
+                <span>{item.label}</span>
               </button>
-            </div>
+            ))}
           </div>
-
-          {/* Mobile Navigation Menu */}
-          {isNavOpen && (
-            <div className="md:hidden bg-white border-t border-gray-200 rounded-b-xl shadow-inner">
-              <div className="grid grid-cols-2 gap-1 p-2">
-                {sidebarItems.map((item) => (
-                  <button
-                    key={item.id}
-                    onClick={() => {
-                      setActiveSection(item.id);
-                      setIsNavOpen(false);
-                    }}
-                    className={`flex items-center gap-2 px-3 py-3 text-sm font-medium rounded-lg transition-colors ${
-                      activeSection === item.id
-                        ? 'bg-blue-600 text-white shadow-md'
-                        : 'text-gray-600 hover:bg-gray-100 bg-gray-50'
-                    }`}
-                  >
-                    <item.icon className="text-lg flex-shrink-0" />
-                    <span className="truncate text-xs sm:text-sm">{item.label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
         </div>
 
         {/* DASHBOARD SECTION */}
