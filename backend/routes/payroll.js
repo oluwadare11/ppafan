@@ -596,7 +596,11 @@ router.post('/process/generate', async (req, res) => {
     })();
     const attEndDate = endDate < yesterdayLagos ? endDate : yesterdayLagos;
 
+    // Use req.tenantId (pumphouse) — attendance records are stored under the middleware tenantId,
+    // not the payroll TENANT_ID constant ('ppafan'). Filter explicitly to avoid phantom records.
+    const attendanceTenantId = req.tenantId || 'pumphouse';
     const attendanceRecords = await Attendance.find({
+      tenantId:   attendanceTenantId,
       date:       { $gte: startDate, $lte: attEndDate },
       employeeId: { $not: /^(HOLIDAY|LEAVE_)/ }
     });
