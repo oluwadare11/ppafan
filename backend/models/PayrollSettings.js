@@ -47,7 +47,7 @@ const payrollSettingsSchema = new mongoose.Schema({
 
     // PAYE — Pay As You Earn (Nigerian income tax)
     paye: {
-      enabled: { type: Boolean, default: true },
+      enabled: { type: Boolean, default: false },
 
       // NTA 2025 progressive tax brackets (effective January 1, 2026)
       // Note: brackets are hardcoded in payrollCalculations.js per NTA 2025 statute.
@@ -74,7 +74,7 @@ const payrollSettingsSchema = new mongoose.Schema({
 
     // Contributory Pension Scheme
     pension: {
-      enabled:                  { type: Boolean, default: true },
+      enabled:                  { type: Boolean, default: false },
       employeeRate:             { type: Number, default: 8 },   // 8% employee
       employerRate:             { type: Number, default: 10 },  // 10% employer
       pensionableComponents:    { type: [String], default: ['basic', 'housing', 'transport'] },

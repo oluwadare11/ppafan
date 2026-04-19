@@ -2065,12 +2065,12 @@ router.get('/attendance-summary', async (req, res) => {
     // ENHANCED: Get attendance records with proper tenant filtering
     // FIXED: Use Lagos timezone for date range query
     const allRecords = await TenantAttendance.find({
-      tenantId: req.tenantId, // CRITICAL: Tenant filtering
+      tenantId: req.tenantId,
       date: {
         $gte: getLagosDateString(dateRangeStart),
         $lte: getLagosDateString(dateRangeEnd),
       },
-      employeeId: { $nin: ['HOLIDAY', /^LEAVE_/] }
+      employeeId: { $nin: ['HOLIDAY'], $not: /^LEAVE_/ }
     }).lean();
 
     // Pre-fetch holiday dates once — filter synchronously
@@ -2148,13 +2148,17 @@ router.get('/attendance-summary', async (req, res) => {
 
     const staffMap = {};
     allStaff.forEach(staff => {
-      staffMap[staff.employeeId] = {
+      const info = {
         _id: staff._id,
         firstName: staff.firstName,
         lastName: staff.lastName || '',
         position: staff.position || 'N/A',
         department: staff.department || 'N/A',
       };
+      staffMap[staff.employeeId] = info;
+      // Also index by unpadded numeric ID so device scans (e.g. "101") match "0101"
+      const unpadded = staff.employeeId.replace(/^0+/, '');
+      if (unpadded && unpadded !== staff.employeeId) staffMap[unpadded] = info;
     });
 
     const stats = {

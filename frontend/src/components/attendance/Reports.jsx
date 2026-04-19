@@ -90,7 +90,7 @@ const EnhancedReports = ({ staff, getStaffName, getStaffPosition, loading: paren
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [filterDate, setFilterDate] = useState(new Date().toISOString().split('T')[0]);
+  const [filterDate, setFilterDate] = useState(new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' }));
   const [reportPage, setReportPage] = useState(1);
   const [reportTotalPages, setReportTotalPages] = useState(1);
   const [searchTerm, setSearchTerm] = useState('');
@@ -153,13 +153,12 @@ const EnhancedReports = ({ staff, getStaffName, getStaffPosition, loading: paren
     try {
       setLoadingSevenDayCharts(true);
       
-      // Calculate date range for last 7 days
-      const endDate = new Date();
-      const startDate = new Date();
-      startDate.setDate(startDate.getDate() - 6); // Last 7 days including today
-      
-      const startDateStr = startDate.toISOString().split('T')[0];
-      const endDateStr = endDate.toISOString().split('T')[0];
+      // Calculate date range for last 7 days (Lagos timezone)
+      const todayLagos = new Date().toLocaleDateString('en-CA', { timeZone: 'Africa/Lagos' });
+      const sevenDaysAgo = new Date(todayLagos + 'T12:00:00Z');
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+      const startDateStr = sevenDaysAgo.toISOString().split('T')[0];
+      const endDateStr = todayLagos;
       
       // Fetch attendance data for 7-day period
       const response = await axios.get(`${API_BASE_URL}/api/attendance/analytics`, {

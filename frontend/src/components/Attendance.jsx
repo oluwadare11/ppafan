@@ -568,7 +568,8 @@ function Attendance() {
         params.startDate = new Date().toISOString().split('T')[0];
       }
 
-      const response = await makeRequest('/api/adms/attendance-summary', {
+      const queryString = new URLSearchParams(params).toString();
+      const response = await makeRequest(`/api/adms/attendance-summary?${queryString}`, {
         method: 'GET',
         headers: {
           'Content-Type': 'application/json'
@@ -577,27 +578,38 @@ function Attendance() {
       
       const records = response.records || [];
       setAttendanceRecords(records);
-      
+
       const processedLiveLogs = (response.recent || []).map(log => ({
         ...log,
         photoUrl: log.photoId ? `/api/adms/photo/${log.photoId}` : null
       }));
       setLiveLogs(processedLiveLogs);
-      
+
       setDeviceStatus({
         isOnline: response.device?.isOnline || false,
         lastSeen: response.device?.lastSeen || null,
         totalRequests: response.device?.totalRequests || 0,
         attendanceCount: response.device?.attendanceCount || 0,
       });
-      
+
       setReportTotalPages(response.totalPages || 1);
       setLastFetchTime(now);
-      
-      if (staff.length > 0) {
+
+      // Use backend-computed stats directly (most accurate — already Lagos-timezone aware)
+      if (response.stats) {
+        const s = response.stats;
+        setDashboardStats(prev => ({
+          ...prev,
+          totalStaff: s.totalStaff ?? prev.totalStaff,
+          presentToday: s.present ?? 0,
+          absentToday: s.absent ?? 0,
+          lateToday: s.late ?? 0,
+          notYetClockedIn: Math.max(0, (s.totalStaff ?? 0) - (s.present ?? 0) - (s.absent ?? 0))
+        }));
+      } else if (staff.length > 0) {
         calculateDashboardStats(staff, records);
-        updateChartData(records, 'today');
       }
+      updateChartData(records, 'today');
 
       // Update session cache with attendance data for faster subsequent loads
       try {
