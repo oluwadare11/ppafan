@@ -71,8 +71,13 @@ function flattenPayrollRecord(r) {
   const bdEarlyLeave = breakdown.filter(d => d.type === 'early_leave' || d.type === 'earlyLeave').reduce((s, d) => s + (d.amount || 0), 0);
   const bdAbsence    = breakdown.filter(d => d.type === 'absence').reduce((s, d) => s + (d.amount || 0), 0);
 
+  // Build full name — stored as `name` in schema; fallback to firstName+lastName if blank
+  const storedName = r.name || `${r.firstName || ''} ${r.lastName || ''}`.trim() || String(r.employeeNumber || '');
+
   return {
     ...r,
+    name:         storedName,
+    employeeName: storedName,
     baseSalary:          r.salaryStructure?.baseSalary || r.baseSalary || 0,
     grossSalary:         r.payrollSummary?.grossSalary || r.grossSalary || 0,
     netSalary:           r.payrollSummary?.netPay      || r.netSalary  || 0,
@@ -820,7 +825,7 @@ router.post('/process/generate', async (req, res) => {
           tenantId:        TENANT_ID,
           employeeId:      staffMember._id,
           employeeNumber:  staffMember.employeeId,
-          employeeName:    payrollResult.name,
+          name:            payrollResult.name,
           firstName:       staffMember.firstName || '',
           lastName:        staffMember.lastName  || '',
           email:           staffMember.email     || '',
@@ -1030,7 +1035,7 @@ router.get('/process/:period', async (req, res) => {
     }
 
     const pEmpNums = [...new Set(records.map(r => String(r.employeeNumber)))];
-    const pStaff = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: pEmpNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const pStaff = await Staff.find({ employeeId: { $in: pEmpNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
     const pNameMap = {};
     pStaff.forEach(s => { pNameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
@@ -1193,7 +1198,7 @@ router.get('/payslips/list/:period', async (req, res) => {
     if (records.length === 0) return res.json({ payslips: [], count: 0 });
 
     const psEmpNums = [...new Set(records.map(r => String(r.employeeNumber)))];
-    const psStaff = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: psEmpNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const psStaff = await Staff.find({ employeeId: { $in: psEmpNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
     const psNameMap = {};
     psStaff.forEach(s => { psNameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
@@ -1456,7 +1461,7 @@ router.get('/bonuses/:period', async (req, res) => {
     }).select('employeeNumber salaryStructure.bonuses').lean();
 
     const empNums = [...new Set(records.map(r => String(r.employeeNumber)))];
-    const staffDocs = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const staffDocs = await Staff.find({ employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
     const nameMap = {};
     staffDocs.forEach(s => { nameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
@@ -1536,7 +1541,7 @@ router.get('/overtime/:period', async (req, res) => {
     }).select('employeeNumber salaryStructure.overtime').lean();
 
     const empNums = [...new Set(records.map(r => String(r.employeeNumber)))];
-    const staffDocs = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const staffDocs = await Staff.find({ employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
     const nameMap = {};
     staffDocs.forEach(s => { nameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
@@ -1893,7 +1898,7 @@ router.get('/preview/:period', async (req, res) => {
 
     // Build staff name lookup
     const empNumbers = [...new Set(records.map(r => String(r.employeeNumber)))];
-    const staffDocs = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNumbers } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
+    const staffDocs = await Staff.find({ employeeId: { $in: empNumbers } }, { employeeId: 1, firstName: 1, lastName: 1 }).lean();
     const nameMap = {};
     staffDocs.forEach(s => { nameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 
@@ -2266,7 +2271,7 @@ router.get('/deductions/calendar/:period', async (req, res) => {
 
     // Build staff name lookup
     const empNums = [...new Set(payrollRecords.map(r => String(r.employeeNumber)))];
-    const staffForCal = await Staff.find({ tenantId: TENANT_ID, employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1, department: 1 }).lean();
+    const staffForCal = await Staff.find({ employeeId: { $in: empNums } }, { employeeId: 1, firstName: 1, lastName: 1, department: 1 }).lean();
     const calNameMap = {};
     staffForCal.forEach(s => { calNameMap[String(s.employeeId)] = `${s.firstName} ${s.lastName || ''}`.trim(); });
 

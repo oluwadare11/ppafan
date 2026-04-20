@@ -1854,16 +1854,17 @@ const updateAttendanceRecord = async (employeeId, timestamp, type, staff, scanId
         attendance.clockOutCount = (attendance.clockOutCount || 1) + 1;
         attendance.absent = false;
         
-        if (timestamp < expectedEnd) {
+        const earlyLeaveGrace1 = new Date(expectedEnd.getTime() - 5 * 60 * 1000);
+        if (timestamp < earlyLeaveGrace1) {
           attendance.earlyLeave = true;
           attendance.earlyLeaveMinutes = timeDiffMinutes(expectedEnd, timestamp);
           attendance.overtimeHours = 0;
         } else {
           attendance.earlyLeave = false;
           attendance.earlyLeaveMinutes = 0;
-          attendance.overtimeHours = timeDiffMinutes(timestamp, expectedEnd) / 60;
+          attendance.overtimeHours = timestamp > expectedEnd ? timeDiffMinutes(timestamp, expectedEnd) / 60 : 0;
         }
-        
+
         if (!attendance.checkOutEmailSent) {
           logger.debug('Sending first clock-out email', { tenantId, employeeId });
           await sendCheckOutEmail(attendance, staff, timestamp, shift, tenantId, false);
@@ -1904,18 +1905,19 @@ const updateAttendanceRecord = async (employeeId, timestamp, type, staff, scanId
         attendance.clockOutCount = 1;
         attendance.absent = false;
 
-        if (timestamp < expectedEnd) {
+        const earlyLeaveGrace2 = new Date(expectedEnd.getTime() - 5 * 60 * 1000);
+        if (timestamp < earlyLeaveGrace2) {
           attendance.earlyLeave = true;
           attendance.earlyLeaveMinutes = timeDiffMinutes(expectedEnd, timestamp);
           attendance.overtimeHours = 0;
         } else {
           attendance.earlyLeave = false;
           attendance.earlyLeaveMinutes = 0;
-          attendance.overtimeHours = timeDiffMinutes(timestamp, expectedEnd) / 60;
+          attendance.overtimeHours = timestamp > expectedEnd ? timeDiffMinutes(timestamp, expectedEnd) / 60 : 0;
         }
 
         await attendance.save();
-        
+
         logger.debug('Sending first clock-out email', { tenantId, employeeId });
         await sendCheckOutEmail(attendance, staff, timestamp, shift, tenantId, false);
         attendance.checkOutEmailSent = true;

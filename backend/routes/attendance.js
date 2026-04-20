@@ -415,15 +415,16 @@ router.post('/', async (req, res) => {
     } else if (type === 'clock-out') {
       attendance.checkOut = recordTime;
 
-      // Calculate early leave or overtime
-      if (recordTime < expectedEnd) {
+      // Calculate early leave or overtime (5-minute grace before shift end)
+      const earlyLeaveGrace = new Date(expectedEnd.getTime() - 5 * 60 * 1000);
+      if (recordTime < earlyLeaveGrace) {
         attendance.earlyLeave = true;
         attendance.earlyLeaveMinutes = timeDiffMinutes(expectedEnd, recordTime);
         attendance.overtimeHours = 0;
       } else {
         attendance.earlyLeave = false;
         attendance.earlyLeaveMinutes = 0;
-        attendance.overtimeHours = timeDiffMinutes(recordTime, expectedEnd) / 60;
+        attendance.overtimeHours = recordTime > expectedEnd ? timeDiffMinutes(recordTime, expectedEnd) / 60 : 0;
       }
 
       await attendance.save();
@@ -859,15 +860,16 @@ router.post('/manual', async (req, res) => {
         const checkOutTime = new Date(`${date}T${checkOut}:00.000+01:00`);
         attendance.checkOut = checkOutTime;
 
-        // Calculate early leave based on shift
-        if (checkOutTime < expectedEnd) {
+        // Calculate early leave based on shift (5-minute grace before shift end)
+        const recalcEarlyLeaveGrace = new Date(expectedEnd.getTime() - 5 * 60 * 1000);
+        if (checkOutTime < recalcEarlyLeaveGrace) {
           attendance.earlyLeave = true;
           attendance.earlyLeaveMinutes = timeDiffMinutes(expectedEnd, checkOutTime);
           attendance.overtimeHours = 0;
         } else {
           attendance.earlyLeave = false;
           attendance.earlyLeaveMinutes = 0;
-          attendance.overtimeHours = timeDiffMinutes(checkOutTime, expectedEnd) / 60;
+          attendance.overtimeHours = checkOutTime > expectedEnd ? timeDiffMinutes(checkOutTime, expectedEnd) / 60 : 0;
         }
       }
     }
