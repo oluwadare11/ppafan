@@ -601,14 +601,22 @@ router.post('/process/generate', async (req, res) => {
     })();
     const attEndDate = endDate < yesterdayLagos ? endDate : yesterdayLagos;
 
-    // Use req.tenantId (pumphouse) — attendance records are stored under the middleware tenantId,
-    // not the payroll TENANT_ID constant ('ppafan'). Filter explicitly to avoid phantom records.
-    const attendanceTenantId = req.tenantId || 'pumphouse';
-    const attendanceRecords = await Attendance.find({
-      tenantId:   attendanceTenantId,
+    // Fetch attendance from ALL tenantIds: real check-ins are stored under 'pumphouse',
+    // auto-generated absences (from payroll cron) are stored under 'ppafan'.
+    // Deduplicate by staff+date: prefer records that have a real checkIn over auto-absences.
+    const allAttendanceRaw = await Attendance.find({
       date:       { $gte: startDate, $lte: attEndDate },
       employeeId: { $not: /^(HOLIDAY|LEAVE_)/ }
-    });
+    }).lean();
+
+    const attendanceDedupeMap = {};
+    for (const r of allAttendanceRaw) {
+      const key = `${r.employeeId}__${r.date}`;
+      if (!attendanceDedupeMap[key] || (!attendanceDedupeMap[key].checkIn && r.checkIn)) {
+        attendanceDedupeMap[key] = r;
+      }
+    }
+    const attendanceRecords = Object.values(attendanceDedupeMap);
 
     // Fetch active loans for this period
     const activeLoans = await Loan.find({ tenantId: TENANT_ID, status: 'active', startPeriod: { $lte: period } });
@@ -710,6 +718,39 @@ router.post('/process/generate', async (req, res) => {
       return count > 0 ? count : workingDays; // fallback if nothing matched
     };
 
+    // Returns the effective shift duration in minutes for the employee on a specific date,
+    // or null if no shift is configured. Used so per-minute lateness/early-leave rates
+    // correctly reflect the actual shift the employee was meant to work that day.
+    const getShiftMinutesForDate = (employeeId, dateStr) => {
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const d = new Date(dateStr + 'T12:00:00Z');
+      const dayName = dayNames[d.getDay()];
+      const empPermShifts = allShiftsByEmployee[employeeId] || [];
+      const empTempShifts = tempShiftsByEmployee[employeeId] || [];
+      const tempShift = empTempShifts.find(ts => ts.tempStartDate <= dateStr && ts.tempEndDate >= dateStr);
+      const permShift = empPermShifts.find(s => s.dayOfWeek === dayName);
+      const shift = tempShift || permShift;
+      if (!shift?.resumptionTime || !shift?.closingTime) return null;
+      const [rH, rM] = shift.resumptionTime.split(':').map(Number);
+      const [cH, cM] = shift.closingTime.split(':').map(Number);
+      const mins = (cH * 60 + cM) - (rH * 60 + rM) - (shift.breakDuration || 0);
+      return mins > 0 ? mins : null;
+    };
+
+    // Returns true if the given date string (YYYY-MM-DD) falls on a scheduled shift day
+    // for the employee. Used to exclude auto-absence records on non-shift days.
+    const isStaffShiftDay = (employeeId, dateStr) => {
+      const empPermShifts = allShiftsByEmployee[employeeId];
+      const empTempShifts = tempShiftsByEmployee[employeeId] || [];
+      if ((!empPermShifts || empPermShifts.length === 0) && empTempShifts.length === 0) return true; // no shifts = no filter
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const d = new Date(dateStr + 'T12:00:00Z');
+      const dayName = dayNames[d.getDay()];
+      const permShiftDayNames = new Set((empPermShifts || []).map(s => s.dayOfWeek));
+      if (permShiftDayNames.has(dayName)) return true;
+      return empTempShifts.some(ts => ts.tempStartDate <= dateStr && ts.tempEndDate >= dateStr);
+    };
+
     const results = { success: 0, failed: 0, errors: [], payrollRecords: [] };
 
     for (const staffMember of staff) {
@@ -720,15 +761,25 @@ router.post('/process/generate', async (req, res) => {
               r => r.employeeId?.toString() === staffMember.employeeId?.toString()
             );
 
-        const attendanceData = memberAttendance.map(r => ({
-          date:              r.date,
-          checkIn:           r.checkIn,
-          checkOut:          r.checkOut,
-          lateMinutes:       r.lateMinutes       || 0,
-          earlyLeaveMinutes: r.earlyLeaveMinutes  || 0,
-          absent:            r.absent             || false,
-          isHalfDay:         r.isHalfDay          || false
-        }));
+        const attendanceData = memberAttendance
+          // Drop absence-only records that fall on non-shift days (auto-absences created
+          // for global workdays when the employee isn't scheduled to work that day).
+          .filter(r => {
+            if (r.absent && !r.checkIn) {
+              return isStaffShiftDay(staffMember.employeeId, r.date);
+            }
+            return true;
+          })
+          .map(r => ({
+            date:              r.date,
+            checkIn:           r.checkIn,
+            checkOut:          r.checkOut,
+            lateMinutes:       r.lateMinutes       || 0,
+            earlyLeaveMinutes: r.earlyLeaveMinutes  || 0,
+            absent:            r.absent             || false,
+            isHalfDay:         r.isHalfDay          || false,
+            shiftMinutes:      getShiftMinutesForDate(staffMember.employeeId, r.date)
+          }));
 
         const existingRecord  = existingRecordMap[staffMember.employeeId];
         const existingBonuses = existingRecord?.salaryStructure?.bonuses || [];
@@ -2031,223 +2082,6 @@ router.get('/analytics/dashboard', async (req, res) => {
     });
   } catch (err) {
     logger.error('Analytics dashboard error', { error: err.message });
-    res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
-  }
-});
-
-// ============================================
-// PAYROLL SIMULATOR (no DB writes)
-// ============================================
-
-router.post('/simulate', async (req, res) => {
-  try {
-    const {
-      // Earnings
-      baseSalary     = 0,
-      allowances     = [],        // [{ code, name, amount }]
-      // Attendance scenarios
-      lateDays       = [],        // [{ minutes }] — each entry is one late day
-      earlyLeaveDays = [],        // [{ minutes }]
-      absentDays     = 0,
-      // Exemptions
-      exemptions     = {},        // { paye, pension, nhf, nhis }
-      // Working days override
-      workingDays    = 26,
-      // Optional: deep-merge custom statutory settings (e.g. different tax brackets)
-      settingsOverride = null,
-      // NTA 2025 annual tax reliefs (all values in Naira per year)
-      taxReliefs     = {},        // { annualRent, annualLifeAssurance, annualMortgageInterest, voluntaryPensionAVC }
-      // One-off additions (NTA 2025: taxable income, excluded from pension/NHF base)
-      oneOffs        = []         // [{ type, label, amount }]
-    } = req.body;
-
-    if (!baseSalary || baseSalary <= 0) {
-      return res.status(400).json({ error: 'INVALID_BASE_SALARY', message: 'baseSalary must be > 0' });
-    }
-
-    // Load tenant's saved settings as base
-    let settings = await PayrollSettings.findOne({ tenantId: TENANT_ID, isActive: true }).lean();
-
-    // Deep-merge caller-supplied overrides (e.g. custom tax brackets for testing)
-    if (settingsOverride && settings) {
-      settings = JSON.parse(JSON.stringify(settings));
-      if (settingsOverride.statutory) {
-        settings.statutory = { ...settings.statutory, ...settingsOverride.statutory };
-        if (settingsOverride.statutory.paye) {
-          settings.statutory.paye = { ...settings.statutory.paye, ...settingsOverride.statutory.paye };
-        }
-      }
-    }
-
-    // Use defaults if no saved settings found; always deep-clone so we can mutate for simulator
-    let effectiveSettings = settings
-      ? JSON.parse(JSON.stringify(settings))
-      : {
-          statutory: {
-            paye:    { enabled: true, taxBrackets: [], minimumTaxRate: 1 },
-            pension: { enabled: true, employeeRate: 8, employerRate: 10, pensionableComponents: ['basic', 'housing', 'transport'] },
-            nhf:     { enabled: true, rate: 2.5, calculationBase: 'gross', minimumSalary: 3000 },
-            nhis:    { enabled: true, employeeRate: 5, employerRate: 10 },
-            itf:     { enabled: true, rate: 1, minimumStaff: 1 },
-            nsitf:   { enabled: true, employerRate: 1, calculationBase: 'gross' }
-          },
-          deductions: {
-            lateness:   { enabled: true, method: 'per_hour', graceMinutes: 5, roundUpToHour: true },
-            earlyLeave: { enabled: true, method: 'per_hour', graceMinutes: 5, roundUpToHour: true },
-            absence:    { enabled: true, method: 'full_day' }
-          },
-          processing: { workingDays: 26, workingHoursPerDay: 8 }
-        };
-
-    // SIMULATOR: force all statutory deductions enabled regardless of tenant settings.
-    // The `enabled` flag gates production payroll — the simulator always shows every
-    // calculation; use the `exemptions` param to skip individual staff members.
-    if (!effectiveSettings.statutory) effectiveSettings.statutory = {};
-    ['paye', 'pension', 'nhf', 'nhis', 'itf', 'nsitf'].forEach(key => {
-      if (!effectiveSettings.statutory[key]) effectiveSettings.statutory[key] = {};
-      effectiveSettings.statutory[key].enabled = true;
-    });
-    // ITF: simulator passes staffCount=1; override minimumStaff so it always calculates
-    effectiveSettings.statutory.itf.minimumStaff = 1;
-    // Fill in missing default rates
-    const nhfS   = effectiveSettings.statutory.nhf;
-    const nhisS  = effectiveSettings.statutory.nhis;
-    const nsitfS = effectiveSettings.statutory.nsitf;
-    if (!nhfS.rate)              nhfS.rate              = 2.5;
-    if (!nhisS.employeeRate)     nhisS.employeeRate     = 5;
-    if (!nhisS.employerRate)     nhisS.employerRate     = 10;
-    if (!nsitfS.employerRate)    nsitfS.employerRate    = 1;
-    if (!nsitfS.calculationBase) nsitfS.calculationBase = 'gross';
-
-    // 1. Gross salary
-    const totalAllowances  = allowances.reduce((s, a) => s + (a.amount || 0), 0);
-    const grossMonthly     = baseSalary + totalAllowances;
-    const annualGross      = grossMonthly * 12;
-
-    const housingAllowance   = allowances.find(a => a.code === 'HOUSING'   || a.type === 'housing')?.amount   || 0;
-    const transportAllowance = allowances.find(a => a.code === 'TRANSPORT' || a.type === 'transport')?.amount || 0;
-
-    // 2. Statutory deductions
-    // NTA 2025: pension/NHF/NHIS computed first — they reduce taxable income before PAYE
-    const pension = calculatePension(baseSalary, housingAllowance, transportAllowance, effectiveSettings, exemptions);
-    const nhf     = calculateNHF(baseSalary, grossMonthly, effectiveSettings, exemptions);
-    const nhis    = calculateNHIS(baseSalary, grossMonthly, effectiveSettings, exemptions);
-
-    // Rent relief = 20% of actual annual rent paid, capped at ₦500,000/yr (NTA 2025)
-    const annualRent = taxReliefs.annualRent || 0;
-    const rentRelief = Math.min(annualRent * 0.20, 500000);
-    const preTaxDeductions = {
-      pension:                (pension.employeeAmount || 0) * 12,
-      nhf:                    (nhf.amount             || 0) * 12,
-      nhis:                   (nhis.employeeAmount    || 0) * 12,
-      rentRelief,
-      annualLifeAssurance:    taxReliefs.annualLifeAssurance    || 0,
-      annualMortgageInterest: taxReliefs.annualMortgageInterest || 0,
-      voluntaryPensionAVC:    taxReliefs.voluntaryPensionAVC    || 0
-    };
-
-    const paye  = calculatePAYE(annualGross, effectiveSettings, exemptions, preTaxDeductions);
-    const itf   = calculateITF(grossMonthly, 1, effectiveSettings);
-    const nsitf = calculateNSITF(baseSalary, grossMonthly, effectiveSettings);
-
-    // 3. One-off additions (NTA 2025: taxable, excluded from pension/NHF base)
-    const oneOffTotal = oneOffs.reduce((s, o) => s + (o.amount || 0), 0);
-    let oneOffPAYE = 0;
-    if (oneOffTotal > 0 && !exemptions.paye) {
-      const payeWithOneOffs = calculatePAYE(annualGross + oneOffTotal, effectiveSettings, exemptions, preTaxDeductions);
-      oneOffPAYE = Math.max(0, (payeWithOneOffs.amount || 0) - (paye.amount || 0));
-    }
-
-    // 4. Attendance deductions
-    const effectiveWorkingDays = workingDays || effectiveSettings.processing?.workingDays || 26;
-    const dailyRate  = effectiveWorkingDays > 0 ? grossMonthly / effectiveWorkingDays : 0;
-    const dailyGross = dailyRate;
-
-    let latenessAmt   = 0;
-    const latenessBreakdown = [];
-    for (const d of lateDays) {
-      const r = calculateLatenessDeduction(d.minutes || 0, dailyRate, effectiveSettings);
-      latenessAmt += r?.amount || 0;
-      if (r?.amount > 0) latenessBreakdown.push({ minutes: d.minutes, amount: r.amount });
-    }
-
-    let earlyLeaveAmt = 0;
-    const earlyLeaveBreakdown = [];
-    for (const d of earlyLeaveDays) {
-      const r = calculateEarlyLeaveDeduction(d.minutes || 0, dailyRate, effectiveSettings);
-      earlyLeaveAmt += r?.amount || 0;
-      if (r?.amount > 0) earlyLeaveBreakdown.push({ minutes: d.minutes, amount: r.amount });
-    }
-
-    let absenceAmt = 0;
-    for (let i = 0; i < absentDays; i++) {
-      const r = calculateAbsenceDeduction(dailyRate, dailyGross, effectiveSettings, false);
-      absenceAmt += r?.amount || 0;
-    }
-
-    // 5. Totals
-    const baseStatutory  = (paye.monthlyAmount || 0) + (pension.employeeAmount || 0) + (nhf.amount || 0) + (nhis.employeeAmount || 0);
-    const totalStatutory = baseStatutory + oneOffPAYE;
-    const grossWithOneOffs  = grossMonthly + oneOffTotal;
-    const totalAttendance   = latenessAmt + earlyLeaveAmt + absenceAmt;
-    const totalDeductions   = totalStatutory + totalAttendance;
-    const netPay            = grossWithOneOffs - totalDeductions;
-    const totalEmployerCost = grossWithOneOffs + (pension.employerAmount || 0) + (nhis.employerAmount || 0) + (itf.amount || 0) + (nsitf.amount || 0);
-
-    res.json({
-      success: true,
-      input: { baseSalary, allowances, lateDays, absentDays, earlyLeaveDays, workingDays: effectiveWorkingDays, taxReliefs, oneOffs },
-      earnings: {
-        baseSalary,
-        allowances: allowances.map(a => ({ code: a.code || 'CUSTOM', name: a.name || 'Allowance', amount: a.amount || 0 })),
-        oneOffs: oneOffs.filter(o => o.amount > 0),
-        oneOffTotal,
-        grossMonthly,
-        grossWithOneOffs,
-        annualGross
-      },
-      rates: {
-        dailyRate:   Math.round(dailyRate),
-        workingDays: effectiveWorkingDays
-      },
-      statutoryDeductions: {
-        paye: {
-          monthlyAmount:        (paye.monthlyAmount || 0) + oneOffPAYE,
-          regularMonthlyAmount: paye.monthlyAmount || 0,
-          oneOffPAYE,
-          annualAmount:         paye.amount || 0,
-          details:              paye.details || {}
-        },
-        pension: { employeeAmount: pension.employeeAmount || 0, employerAmount: pension.employerAmount || 0, details: pension.details },
-        nhf:     { amount: nhf.amount || 0, details: nhf.details },
-        nhis:    { employeeAmount: nhis.employeeAmount || 0, employerAmount: nhis.employerAmount || 0 },
-        totalStatutory: Math.round(totalStatutory)
-      },
-      attendanceDeductions: {
-        lateness:   { days: lateDays.length,       totalMinutes: lateDays.reduce((s, d) => s + (d.minutes || 0), 0),       totalAmount: Math.round(latenessAmt),   breakdown: latenessBreakdown   },
-        earlyLeave: { days: earlyLeaveDays.length, totalMinutes: earlyLeaveDays.reduce((s, d) => s + (d.minutes || 0), 0), totalAmount: Math.round(earlyLeaveAmt), breakdown: earlyLeaveBreakdown },
-        absence:    { days: absentDays, totalAmount: Math.round(absenceAmt) },
-        totalAttendance: Math.round(totalAttendance)
-      },
-      summary: {
-        grossMonthly,
-        grossWithOneOffs,
-        totalStatutory:  Math.round(totalStatutory),
-        totalAttendance: Math.round(totalAttendance),
-        totalDeductions: Math.round(totalDeductions),
-        netPay:          Math.round(netPay),
-        employerContributions: {
-          pension: pension.employerAmount || 0,
-          nhis:    nhis.employerAmount    || 0,
-          itf:     itf.amount             || 0,
-          nsitf:   nsitf.amount           || 0,
-          total:   Math.round(totalEmployerCost - grossWithOneOffs)
-        },
-        totalEmployerCost: Math.round(totalEmployerCost)
-      }
-    });
-  } catch (err) {
-    logger.error('Payroll simulate error', { error: err.message });
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
   }
 });

@@ -116,7 +116,8 @@ function PayrollRegister({ period, startPeriod, endPeriod, setError }) {
       const rows = report.records.map(r => [
         r.employeeNumber || '', r.employeeName || '', r.department || '', r.position || '',
         r.baseSalary || 0, r.totalAllowances || 0, r.grossSalary || 0,
-        r.deductions?.paye || 0, r.deductions?.pension || 0, r.deductions?.nhf || 0, r.deductions?.nhis || 0, r.deductions?.others || 0,
+        r.paye || 0, r.pension || 0, r.nhf || 0, r.nhis || 0,
+        (r.latenessDeduction || 0) + (r.absenceDeduction || 0) + (r.earlyLeaveDeduction || 0) + (r.otherDeductionsAmount || 0),
         r.totalDeductions || 0, r.netSalary || 0, r.status || 'preliminary'
       ]);
       const totals = report.totals || {};
@@ -404,19 +405,19 @@ function PayrollRegister({ period, startPeriod, endPeriod, setError }) {
                             <div className="space-y-1">
                               <div className="flex justify-between">
                                 <span className="text-gray-500">PAYE:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.paye)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.paye)}</span>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-gray-500">Pension:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.pension)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.pension)}</span>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-gray-500">NHF:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.nhf)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.nhf)}</span>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-gray-500">NHIS:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.nhis)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.nhis)}</span>
                               </div>
                             </div>
                           </div>
@@ -427,16 +428,28 @@ function PayrollRegister({ period, startPeriod, endPeriod, setError }) {
                             <div className="space-y-1">
                               <div className="flex justify-between">
                                 <span className="text-gray-500">Lateness:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.lateness)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.latenessDeduction)}</span>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-gray-500">Early Leave:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.earlyLeave)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.earlyLeaveDeduction)}</span>
                               </div>
                               <div className="flex justify-between">
                                 <span className="text-gray-500">Absence:</span>
-                                <span className="text-red-600">₦{formatCurrency(record.deductions?.absence)}</span>
+                                <span className="text-red-600">₦{formatCurrency(record.absenceDeduction)}</span>
                               </div>
+                              {record.lateDays > 0 && (
+                                <div className="flex justify-between text-xs text-gray-400">
+                                  <span>Late days:</span>
+                                  <span>{record.lateDays} ({record.attendanceData?.lateMinutes || 0} min)</span>
+                                </div>
+                              )}
+                              {record.absentDays > 0 && (
+                                <div className="flex justify-between text-xs text-gray-400">
+                                  <span>Absent days:</span>
+                                  <span>{record.absentDays}</span>
+                                </div>
+                              )}
                             </div>
                           </div>
 

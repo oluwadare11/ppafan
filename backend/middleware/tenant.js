@@ -17,7 +17,7 @@ const identifyTenant = async (req, res, next) => {
 
     // Set tenant context with full document data
     req.tenant = {
-      tenantId: tenantDoc.tenantId || 'pumphouse',
+      tenantId: tenantDoc.tenantId || 'ppafan',
       businessName: tenantDoc.businessName || process.env.SYSTEM_NAME || 'PPAfan',
       businessType: tenantDoc.businessType || 'Attendance Management',
       status: tenantDoc.status || 'active',
@@ -27,21 +27,21 @@ const identifyTenant = async (req, res, next) => {
       settings: tenantDoc.settings || {},
       branding: tenantDoc.branding || {}
     };
-    req.tenantId = 'pumphouse';
-    req.subdomain = 'pumphouse';
+    req.tenantId = 'ppafan';
+    req.subdomain = 'ppafan';
 
     next();
   } catch (error) {
     logger.error('Failed to load tenant', { error: error.message });
     // Fallback to minimal tenant object
     req.tenant = {
-      tenantId: 'pumphouse',
+      tenantId: 'ppafan',
       businessName: process.env.SYSTEM_NAME || 'PPAfan',
       status: 'active',
       subscription: { plan: 'enterprise', status: 'active' }
     };
-    req.tenantId = 'pumphouse';
-    req.subdomain = 'pumphouse';
+    req.tenantId = 'ppafan';
+    req.subdomain = 'ppafan';
     next();
   }
 };
@@ -103,7 +103,7 @@ const requireTenantContext = (req, res, next) => {
  * Extract subdomain - returns default for single tenant
  */
 const extractSubdomain = (req) => {
-  return 'pumphouse';
+  return 'ppafan';
 };
 
 // Cache functions (no-op for single tenant)

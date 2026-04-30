@@ -138,11 +138,11 @@ const userSchema = new mongoose.Schema({
     select: false
   },
 
-  // Tenant ID (kept for compatibility, defaults to 'pumphouse')
+  // Tenant ID (kept for compatibility, defaults to 'ppafan')
   tenantId: {
     type: String,
     required: false,
-    default: 'pumphouse'
+    default: 'ppafan'
   },
 
   // Audit Trail
@@ -168,7 +168,7 @@ userSchema.index({ accessType: 1 });
 userSchema.pre('save', async function(next) {
   // Set default tenantId if not provided
   if (!this.tenantId) {
-    this.tenantId = 'pumphouse';
+    this.tenantId = 'ppafan';
   }
 
   // Role and permissions validation

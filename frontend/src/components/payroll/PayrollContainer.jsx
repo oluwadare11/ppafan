@@ -1,11 +1,11 @@
-// PayrollContainer.jsx - Main container for Pump House payroll module
-// 8-tab layout: Dashboard | Staff Setup | Deductions | Process Payroll | Loans | Reports | Simulator | Settings
+// PayrollContainer.jsx - Main container for ppafan payroll module
+// 7-tab layout: Dashboard | Staff Setup | Deductions | Process Payroll | Loans | Reports | Settings
 
 import React, { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { useTenant } from '../../context/TenantProvider.jsx';
 import {
   Settings, Users, Calculator, ChartBar, LayoutDashboard,
-  AlertCircle, RefreshCw, ListChecks, Landmark, FlaskConical,
+  AlertCircle, RefreshCw, ListChecks, Landmark,
   RotateCcw, Lock, Info
 } from 'lucide-react';
 
@@ -21,7 +21,6 @@ import StaffSetupContainer from './staffSetup/StaffSetupContainer';
 import ProcessPayrollContainer from './process/ProcessPayrollContainer';
 import LoansTab from './process/LoansTab';
 import { ReportsContainer } from './reports';
-import PayrollSimulator from './simulator/PayrollSimulator';
 
 const DeductionCalendar = lazy(() => import('./deductions/DeductionCalendar'));
 const DeductionReport   = lazy(() => import('./deductions/DeductionReport'));
@@ -69,7 +68,6 @@ function PayrollContainer() {
     { id: 'process',    label: 'Process Payroll', icon: Calculator,      badge: null },
     { id: 'loans',      label: 'Loans',           icon: Landmark,        badge: null },
     { id: 'reports',    label: 'Reports',         icon: ChartBar,        badge: null },
-    { id: 'simulator',  label: 'Simulator',       icon: FlaskConical,    badge: null },
     { id: 'settings',   label: 'Settings',        icon: Settings,        badge: null },
   ], [staff.length]);
 
@@ -268,16 +266,6 @@ function PayrollContainer() {
 
         <TabPanel id="reports" activeTab={activeTab}>
           <ReportsContainer />
-        </TabPanel>
-
-        <TabPanel id="simulator" activeTab={activeTab}>
-          <div className="mb-6">
-            <h2 className="text-lg font-semibold text-gray-900">Payroll Simulator</h2>
-            <p className="text-sm text-gray-500 mt-0.5">
-              Test payroll calculations using your live settings. Nothing is saved.
-            </p>
-          </div>
-          <PayrollSimulator />
         </TabPanel>
 
         <TabPanel id="settings" activeTab={activeTab}>

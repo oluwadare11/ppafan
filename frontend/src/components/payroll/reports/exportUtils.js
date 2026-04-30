@@ -127,7 +127,7 @@ export function downloadPDF(filename, title, period, columns, rows, options = {}
       doc.setTextColor(255, 255, 255);
       doc.setFontSize(7);
       doc.setFont('helvetica', 'normal');
-      doc.text('Pump House ERP — Confidential Payroll Report', 14, pageH - 3.5);
+      doc.text('PPAfan Attendance System — Confidential Payroll Report', 14, pageH - 3.5);
       doc.text(`Page ${data.pageNumber}`, pageW - 14, pageH - 3.5, { align: 'right' });
     }
   });

@@ -756,8 +756,14 @@ const calculateEmployeePayroll = async ({
 
     if (attendanceModuleEnabled) {
       for (const record of attendanceData || []) {
+        // If the attendance record includes the actual shift duration for that day,
+        // override workingHoursPerDay so the per-minute rate reflects the real shift.
+        const perDaySettings = record.shiftMinutes
+          ? { ...settings, processing: { ...settings.processing, workingHoursPerDay: record.shiftMinutes / 60 } }
+          : settings;
+
         if (record.lateMinutes > 0) {
-          const d = calculateLatenessDeduction(record.lateMinutes, rates.dailyRate, settings);
+          const d = calculateLatenessDeduction(record.lateMinutes, rates.dailyRate, perDaySettings);
           if (d.amount > 0) {
             totalLatenessDeduction += d.amount;
             deductionBreakdown.push({ date: record.date, type: 'lateness',   amount: d.amount, details: d.details });
@@ -765,7 +771,7 @@ const calculateEmployeePayroll = async ({
         }
 
         if (record.earlyLeaveMinutes > 0) {
-          const d = calculateEarlyLeaveDeduction(record.earlyLeaveMinutes, rates.dailyRate, settings);
+          const d = calculateEarlyLeaveDeduction(record.earlyLeaveMinutes, rates.dailyRate, perDaySettings);
           if (d.amount > 0) {
             totalEarlyLeaveDeduction += d.amount;
             deductionBreakdown.push({ date: record.date, type: 'early_leave', amount: d.amount, details: d.details });

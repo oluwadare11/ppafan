@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
 const tenantSchema = new mongoose.Schema({
   tenantId: {
     type: String,
-    default: 'pumphouse',
+    default: 'ppafan',
     unique: true
   },
   businessName: {
@@ -20,7 +20,7 @@ const tenantSchema = new mongoose.Schema({
   },
   subdomain: {
     type: String,
-    default: 'pumphouse'
+    default: 'ppafan'
   },
   status: {
     type: String,
@@ -54,11 +54,11 @@ const tenantSchema = new mongoose.Schema({
 
 // Static method to get or create the single tenant record
 tenantSchema.statics.getOrCreate = async function() {
-  let tenant = await this.findOne({ tenantId: 'pumphouse' });
+  let tenant = await this.findOne({ tenantId: 'ppafan' });
 
   if (!tenant) {
     tenant = await this.create({
-      tenantId: 'pumphouse',
+      tenantId: 'ppafan',
       businessName: process.env.SYSTEM_NAME || 'PPAfan',
       businessType: 'Attendance Management',
       status: 'active',
