@@ -1728,38 +1728,138 @@ router.get('/reports/register', async (req, res) => {
 });
 
 // Statutory reports (PAYE, Pension, NHF, NHIS, ITF, NSITF)
-const STATUTORY_FIELDS = {
-  paye:    r => ({ annualTax: r.paye * 12, monthlyTax: r.paye }),
-  pension: r => ({ employeeContribution: r.pension, employerContribution: r.employerPension }),
-  nhf:     r => ({ nhfContribution: r.nhf }),
-  nhis:    r => ({ employeeContribution: r.nhis, employerContribution: r.employerNhis }),
-  itf:     r => ({ itfAmount: r.itfAmount || 0 }),
-  nsitf:   r => ({ nsitfAmount: r.nsitfAmount || 0 })
-};
-
 ['paye', 'pension', 'nhf', 'nhis', 'itf', 'nsitf'].forEach(type => {
   router.get(`/reports/statutory/${type}`, async (req, res) => {
     try {
       const { period } = req.query;
       if (!period) return res.status(400).json({ error: 'MISSING_PERIOD' });
 
-      const records = await Payroll.find({ tenantId: TENANT_ID, period, calculationType: 'monthly' }).lean();
-      const flat    = records.map(flattenPayrollRecord);
+      const [records, settingsDoc] = await Promise.all([
+        Payroll.find({ tenantId: TENANT_ID, period, calculationType: 'monthly' }).lean(),
+        PayrollSettings.findOne({ tenantId: TENANT_ID }).lean()
+      ]);
+      const flat = records.map(flattenPayrollRecord);
 
-      const rows = flat.map(r => ({
-        employeeNumber: r.employeeNumber,
-        employeeName:   r.name || r.employeeName,
-        department:     r.department,
-        grossSalary:    r.grossSalary,
-        ...STATUTORY_FIELDS[type](r)
-      }));
+      let employees, totals, settings, pfaSummary;
 
-      const total = rows.reduce((s, r) => {
-        Object.keys(STATUTORY_FIELDS[type](r)).forEach(k => { s[k] = (s[k] || 0) + (r[k] || 0); });
-        return s;
-      }, {});
+      if (type === 'paye') {
+        employees = flat.map(r => ({
+          employeeNumber:    r.employeeNumber,
+          employeeName:      r.name || r.employeeName,
+          department:        r.department || '',
+          taxId:             r.taxId || '',
+          totalGross:        r.grossSalary || 0,
+          totalTaxableIncome: r.taxableIncome || (r.grossSalary || 0),
+          totalPaye:         r.paye || 0
+        }));
+        totals = {
+          employeeCount:      employees.length,
+          totalGross:         employees.reduce((s, e) => s + e.totalGross, 0),
+          totalTaxableIncome: employees.reduce((s, e) => s + e.totalTaxableIncome, 0),
+          totalPaye:          employees.reduce((s, e) => s + e.totalPaye, 0)
+        };
+        settings = settingsDoc?.statutory?.paye
+          ? { state: settingsDoc.statutory.paye.state || 'Lagos', lirs: settingsDoc.statutory.paye.lirsNumber || '' }
+          : null;
 
-      res.json({ success: true, period, type, count: rows.length, records: rows, total });
+      } else if (type === 'pension') {
+        employees = flat.map(r => ({
+          employeeNumber:          r.employeeNumber,
+          employeeName:            r.name || r.employeeName,
+          department:              r.department || '',
+          pensionPin:              r.pensionPin || '',
+          pfaName:                 r.pfaName || '',
+          totalGross:              r.grossSalary || 0,
+          totalEmployeeContribution: r.pension || 0,
+          totalEmployerContribution: r.employerPension || 0,
+          totalContribution:       (r.pension || 0) + (r.employerPension || 0)
+        }));
+        const pfaMap = {};
+        employees.forEach(e => {
+          const pfa = e.pfaName || 'Unknown';
+          if (!pfaMap[pfa]) pfaMap[pfa] = { pfaName: pfa, employeeCount: 0, totalContribution: 0 };
+          pfaMap[pfa].employeeCount++;
+          pfaMap[pfa].totalContribution += e.totalContribution;
+        });
+        pfaSummary = Object.values(pfaMap).filter(p => p.pfaName !== 'Unknown' || p.totalContribution > 0);
+        totals = {
+          employeeCount:             employees.length,
+          totalEmployeeContribution: employees.reduce((s, e) => s + e.totalEmployeeContribution, 0),
+          totalEmployerContribution: employees.reduce((s, e) => s + e.totalEmployerContribution, 0),
+          totalContribution:         employees.reduce((s, e) => s + e.totalContribution, 0)
+        };
+        settings = settingsDoc?.statutory?.pension
+          ? { employeeRate: settingsDoc.statutory.pension.employeeRate || 8, employerRate: settingsDoc.statutory.pension.employerRate || 10 }
+          : { employeeRate: 8, employerRate: 10 };
+
+      } else if (type === 'nhf') {
+        employees = flat.map(r => ({
+          employeeNumber: r.employeeNumber,
+          employeeName:   r.name || r.employeeName,
+          department:     r.department || '',
+          totalGross:     r.grossSalary || 0,
+          contribution:   r.nhf || 0
+        }));
+        totals = {
+          employeeCount:    employees.length,
+          totalContribution: employees.reduce((s, e) => s + e.contribution, 0)
+        };
+        settings = { rate: settingsDoc?.statutory?.nhf?.rate || 2.5 };
+
+      } else if (type === 'nhis') {
+        employees = flat.map(r => ({
+          employeeNumber:   r.employeeNumber,
+          employeeName:     r.name || r.employeeName,
+          department:       r.department || '',
+          totalGross:       r.grossSalary || 0,
+          contribution:     r.nhis || 0,
+          employerContribution: r.employerNhis || 0
+        }));
+        totals = {
+          employeeCount:    employees.length,
+          totalContribution: employees.reduce((s, e) => s + e.contribution + e.employerContribution, 0)
+        };
+        settings = settingsDoc?.statutory?.nhis
+          ? { employeeRate: settingsDoc.statutory.nhis.employeeRate || 5, employerRate: settingsDoc.statutory.nhis.employerRate || 10 }
+          : null;
+
+      } else if (type === 'itf') {
+        employees = flat.map(r => ({
+          employeeNumber: r.employeeNumber,
+          employeeName:   r.name || r.employeeName,
+          department:     r.department || '',
+          totalGross:     r.grossSalary || 0,
+          itfContribution: r.itf || 0,
+          contribution:   r.itf || 0
+        }));
+        totals = {
+          employeeCount:    employees.length,
+          totalContribution: employees.reduce((s, e) => s + e.contribution, 0),
+          itfContribution:  employees.reduce((s, e) => s + e.itfContribution, 0)
+        };
+        settings = { itfNumber: settingsDoc?.statutory?.itf?.registrationNumber || '' };
+
+      } else { // nsitf
+        employees = flat.map(r => ({
+          employeeNumber:  r.employeeNumber,
+          employeeName:    r.name || r.employeeName,
+          department:      r.department || '',
+          totalGross:      r.grossSalary || 0,
+          nsitfContribution: r.nsitf || 0,
+          contribution:    r.nsitf || 0
+        }));
+        totals = {
+          employeeCount:    employees.length,
+          totalContribution: employees.reduce((s, e) => s + e.contribution, 0),
+          nsitfContribution: employees.reduce((s, e) => s + e.nsitfContribution, 0)
+        };
+        settings = { nsitfNumber: settingsDoc?.statutory?.nsitf?.registrationNumber || '' };
+      }
+
+      const response = { success: true, period, type, count: employees.length, employees, totals };
+      if (settings)   response.settings   = settings;
+      if (pfaSummary) response.pfaSummary = pfaSummary;
+      res.json(response);
     } catch (err) {
       res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
     }
@@ -1807,14 +1907,33 @@ router.get('/reports/department-costs', async (req, res) => {
     const departments = {};
     flat.forEach(r => {
       const dept = r.department || 'Unknown';
-      if (!departments[dept]) departments[dept] = { department: dept, headCount: 0, grossSalary: 0, netSalary: 0, totalDeductions: 0 };
-      departments[dept].headCount++;
-      departments[dept].grossSalary    += r.grossSalary    || 0;
-      departments[dept].netSalary      += r.netSalary      || 0;
+      if (!departments[dept]) {
+        departments[dept] = { department: dept, employeeCount: 0, grossSalary: 0, netSalary: 0, totalDeductions: 0, employerPension: 0, employerNhis: 0, totalEmployerCost: 0 };
+      }
+      departments[dept].employeeCount++;
+      departments[dept].grossSalary     += r.grossSalary    || 0;
+      departments[dept].netSalary       += r.netSalary      || 0;
       departments[dept].totalDeductions += r.totalDeductions || 0;
+      departments[dept].employerPension += r.employerPension || 0;
+      departments[dept].employerNhis    += r.employerNhis   || 0;
     });
 
-    res.json({ success: true, period, departments: Object.values(departments) });
+    const deptList = Object.values(departments).map(d => ({
+      ...d,
+      totalEmployerCost: d.grossSalary + d.employerPension + d.employerNhis
+    }));
+
+    const totals = deptList.reduce((acc, d) => ({
+      employeeCount:    acc.employeeCount    + d.employeeCount,
+      grossSalary:      acc.grossSalary      + d.grossSalary,
+      netSalary:        acc.netSalary        + d.netSalary,
+      totalDeductions:  acc.totalDeductions  + d.totalDeductions,
+      employerPension:  acc.employerPension  + d.employerPension,
+      employerNhis:     acc.employerNhis     + d.employerNhis,
+      totalEmployerCost: acc.totalEmployerCost + d.totalEmployerCost
+    }), { employeeCount: 0, grossSalary: 0, netSalary: 0, totalDeductions: 0, employerPension: 0, employerNhis: 0, totalEmployerCost: 0 });
+
+    res.json({ success: true, period, departments: deptList, totals });
   } catch (err) {
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
   }
@@ -1845,36 +1964,72 @@ router.get('/reports/payment-status', async (req, res) => {
 // Variance report (period vs previous period)
 router.get('/reports/variance', async (req, res) => {
   try {
-    const { period } = req.query;
-    if (!period) return res.status(400).json({ error: 'MISSING_PERIOD' });
+    // Accept currentPeriod/previousPeriod OR legacy period param
+    let currentPeriod = req.query.currentPeriod || req.query.period;
+    let previousPeriod = req.query.previousPeriod;
 
-    const [year, month] = period.split('-').map(Number);
-    const prevDate = new Date(year, month - 2, 1);
-    const prevPeriod = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+    if (!currentPeriod) return res.status(400).json({ error: 'MISSING_PERIOD' });
 
-    const [current, previous] = await Promise.all([
-      Payroll.find({ tenantId: TENANT_ID, period,     calculationType: 'monthly' }).lean(),
-      Payroll.find({ tenantId: TENANT_ID, period: prevPeriod, calculationType: 'monthly' }).lean()
+    if (!previousPeriod) {
+      const [year, month] = currentPeriod.split('-').map(Number);
+      const prevDate = new Date(year, month - 2, 1);
+      previousPeriod = `${prevDate.getFullYear()}-${String(prevDate.getMonth() + 1).padStart(2, '0')}`;
+    }
+
+    const [currentRaw, previousRaw] = await Promise.all([
+      Payroll.find({ tenantId: TENANT_ID, period: currentPeriod,  calculationType: 'monthly' }).lean(),
+      Payroll.find({ tenantId: TENANT_ID, period: previousPeriod, calculationType: 'monthly' }).lean()
     ]);
 
-    const prevMap = {};
-    previous.map(flattenPayrollRecord).forEach(r => { prevMap[r.employeeNumber] = r; });
+    const currentFlat  = currentRaw.map(flattenPayrollRecord);
+    const previousFlat = previousRaw.map(flattenPayrollRecord);
 
-    const variance = current.map(flattenPayrollRecord).map(r => {
-      const prev = prevMap[r.employeeNumber] || {};
+    const prevMap = {};
+    previousFlat.forEach(r => { prevMap[String(r.employeeNumber)] = r; });
+
+    const pct = (curr, prev) => prev === 0 ? (curr > 0 ? 100 : 0) : parseFloat(((curr - prev) / prev * 100).toFixed(1));
+    const varEntry = (curr, prev) => ({ current: curr, previous: prev, difference: curr - prev, percentChange: pct(curr, prev) });
+
+    const sumField = (arr, field) => arr.reduce((s, r) => s + (r[field] || 0), 0);
+
+    const variances = {
+      employeeCount:      varEntry(currentFlat.length, previousFlat.length),
+      grossSalary:        varEntry(sumField(currentFlat, 'grossSalary'),        sumField(previousFlat, 'grossSalary')),
+      netSalary:          varEntry(sumField(currentFlat, 'netSalary'),          sumField(previousFlat, 'netSalary')),
+      totalDeductions:    varEntry(sumField(currentFlat, 'totalDeductions'),    sumField(previousFlat, 'totalDeductions')),
+      overtimePay:        varEntry(sumField(currentFlat, 'overtimePay'),        sumField(previousFlat, 'overtimePay')),
+      latenessDeduction:  varEntry(sumField(currentFlat, 'latenessDeduction'),  sumField(previousFlat, 'latenessDeduction')),
+      absenceDeduction:   varEntry(sumField(currentFlat, 'absenceDeduction'),   sumField(previousFlat, 'absenceDeduction')),
+      paye:               varEntry(sumField(currentFlat, 'paye'),               sumField(previousFlat, 'paye')),
+      pension:            varEntry(sumField(currentFlat, 'pension'),            sumField(previousFlat, 'pension')),
+    };
+
+    const employeeVariances = currentFlat.map(r => {
+      const prev = prevMap[String(r.employeeNumber)] || {};
+      const grossDiff = (r.grossSalary || 0) - (prev.grossSalary || 0);
       return {
         employeeNumber:  r.employeeNumber,
         employeeName:    r.name || r.employeeName,
+        department:      r.department || '',
         currentGross:    r.grossSalary  || 0,
         previousGross:   prev.grossSalary || 0,
-        grossVariance:   (r.grossSalary || 0) - (prev.grossSalary || 0),
+        grossDifference: grossDiff,
+        percentChange:   pct(r.grossSalary || 0, prev.grossSalary || 0),
         currentNet:      r.netSalary    || 0,
         previousNet:     prev.netSalary  || 0,
-        netVariance:     (r.netSalary || 0) - (prev.netSalary || 0)
+        netDifference:   (r.netSalary || 0) - (prev.netSalary || 0),
+        status:          grossDiff > 0 ? 'increase' : grossDiff < 0 ? 'decrease' : 'unchanged'
       };
     });
 
-    res.json({ success: true, period, prevPeriod, count: variance.length, records: variance });
+    res.json({
+      success: true,
+      currentPeriod,
+      previousPeriod,
+      count: currentFlat.length,
+      variances,
+      employeeVariances
+    });
   } catch (err) {
     res.status(500).json({ error: 'SERVER_ERROR', message: err.message });
   }
