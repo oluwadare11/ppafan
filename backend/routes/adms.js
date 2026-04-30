@@ -1626,22 +1626,21 @@ async function processSingleScan(scan, tenantId) {
     shiftTime: `${shift.resumptionTime}-${shift.closingTime}`
   });
 
-  // *** CRITICAL FIX: Calculate clock-out window BEFORE checking attendance ***
-  // FIXED: Use Lagos timezone for shift end time
-  const shiftEndTime = createLagosShiftTime(timestamp, shift.closingTime);
+  // Determine scan direction using shift midpoint.
+  // A scan before the midpoint of the shift window is a check-in; after is a check-out.
+  const shiftStartTime = createLagosShiftTime(timestamp, shift.resumptionTime);
+  const shiftEndTime   = createLagosShiftTime(timestamp, shift.closingTime);
+  const shiftMidpoint  = new Date((shiftStartTime.getTime() + shiftEndTime.getTime()) / 2);
+  const isAfterMidpoint = timestamp >= shiftMidpoint;
 
-  const windowStart = new Date(shiftEndTime.getTime() - 3 * 60 * 60 * 1000); // 3 hours before
-  const windowEnd = new Date(shiftEndTime.getTime() + 3 * 60 * 60 * 1000);   // 3 hours after
-
-  const isInClockOutWindow = timestamp >= windowStart && timestamp <= windowEnd;
-
-  logger.debug('Clock-out window calculated', {
+  logger.debug('Scan midpoint classification', {
     tenantId,
     employeeId,
-    windowStart: windowStart.toLocaleTimeString(),
-    windowEnd: windowEnd.toLocaleTimeString(),
-    scanTime: timestamp.toLocaleTimeString(),
-    isInWindow: isInClockOutWindow
+    shiftStart:  shiftStartTime.toLocaleTimeString(),
+    shiftEnd:    shiftEndTime.toLocaleTimeString(),
+    midpoint:    shiftMidpoint.toLocaleTimeString(),
+    scanTime:    timestamp.toLocaleTimeString(),
+    isAfterMidpoint
   });
 
   // FIXED: Use Lagos timezone for date string
@@ -1666,50 +1665,26 @@ async function processSingleScan(scan, tenantId) {
   let determinedType;
   let processingNote;
 
-  // *** NEW LOGIC: Check clock-out window first ***
-  if (isInClockOutWindow) {
-    // This scan is in clock-out window
-    if (hasClockIn) {
-      // Has clock-in, this is clock-out
+  // Classify scan based on position relative to shift midpoint
+  if (hasClockIn) {
+    if (isAfterMidpoint) {
       determinedType = 'clock-out';
-      processingNote = 'Within clock-out window with existing clock-in';
-      logger.debug('Determined as clock-out', {
-        tenantId,
-        employeeId,
-        reason: 'Has existing check-in'
-      });
+      processingNote = 'Scan after shift midpoint with existing clock-in — checkout';
     } else {
-      // FIXED: No clock-in, but they showed up - treat as clock-out (partial attendance)
-      determinedType = 'clock-out';
-      processingNote = 'Clock-out window without check-in - staff present but missed morning scan (partial attendance)';
-      logger.debug('Determined as clock-out (partial)', {
-        tenantId,
-        employeeId,
-        reason: 'No morning check-in'
-      });
+      determinedType = 'ignored';
+      processingNote = 'Scan before shift midpoint with existing clock-in — duplicate/break';
     }
   } else {
-    // Outside clock-out window
-    if (hasClockIn) {
-      // Already clocked in, this is likely lunch/break
-      determinedType = 'ignored';
-      processingNote = 'Outside clock-out window - likely lunch/break';
-      logger.debug('Scan ignored', {
-        tenantId,
-        employeeId,
-        reason: 'Lunch/break scan'
-      });
-    } else {
-      // No clock-in yet, this could be late clock-in
+    if (!isAfterMidpoint) {
       determinedType = 'clock-in';
-      processingNote = 'First scan of day outside clock-out window - treating as clock-in';
-      logger.debug('Determined as clock-in', {
-        tenantId,
-        employeeId,
-        timestamp: timestamp.toLocaleTimeString()
-      });
+      processingNote = 'Scan before shift midpoint — check-in';
+    } else {
+      determinedType = 'clock-out';
+      processingNote = 'Scan after shift midpoint without clock-in — partial attendance (missed morning scan)';
     }
   }
+
+  logger.debug('Scan classified', { tenantId, employeeId, determinedType, processingNote });
 
   scan.determinedType = determinedType;
   scan.processingNote = processingNote;

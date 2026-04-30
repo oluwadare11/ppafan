@@ -737,6 +737,40 @@ router.post('/process/generate', async (req, res) => {
       return mins > 0 ? mins : null;
     };
 
+    // Returns the shift object (perm or temp) active for employee on dateStr, or null.
+    const getShiftForDate = (employeeId, dateStr) => {
+      const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+      const d = new Date(dateStr + 'T12:00:00Z');
+      const dayName = dayNames[d.getDay()];
+      const empPermShifts = allShiftsByEmployee[employeeId] || [];
+      const empTempShifts = tempShiftsByEmployee[employeeId] || [];
+      const tempShift = empTempShifts.find(ts => ts.tempStartDate <= dateStr && ts.tempEndDate >= dateStr);
+      const permShift = empPermShifts.find(s => s.dayOfWeek === dayName);
+      return tempShift || permShift || null;
+    };
+
+    // Reclassifies a single attendance record whose only scan was stored as checkOut.
+    // Compares the scan time to the shift midpoint (Lagos UTC+1): if before midpoint
+    // the scan was a check-in arrival, not an early departure.
+    const LAGOS_OFFSET_MS = 60 * 60 * 1000;
+    const reclassifyByScanMidpoint = (r, shift) => {
+      if (r.checkIn || !r.checkOut || !shift?.resumptionTime || !shift?.closingTime) return r;
+      const dateBase = new Date(r.date + 'T00:00:00Z');
+      const [rH, rM] = shift.resumptionTime.split(':').map(Number);
+      const [cH, cM] = shift.closingTime.split(':').map(Number);
+      const startUTC = new Date(dateBase.getTime() + (rH * 60 + rM) * 60000 - LAGOS_OFFSET_MS);
+      const endUTC   = new Date(dateBase.getTime() + (cH * 60 + cM) * 60000 - LAGOS_OFFSET_MS);
+      const midUTC   = new Date((startUTC.getTime() + endUTC.getTime()) / 2);
+      const scanTime = new Date(r.checkOut);
+      if (scanTime < midUTC) {
+        const lateMs = scanTime - startUTC;
+        return { ...r, checkIn: r.checkOut, checkOut: null,
+          lateMinutes: lateMs > 0 ? Math.round(lateMs / 60000) : 0,
+          earlyLeaveMinutes: 0, absent: false };
+      }
+      return r;
+    };
+
     // Returns true if the given date string (YYYY-MM-DD) falls on a scheduled shift day
     // for the employee. Used to exclude auto-absence records on non-shift days.
     const isStaffShiftDay = (employeeId, dateStr) => {
@@ -770,16 +804,20 @@ router.post('/process/generate', async (req, res) => {
             }
             return true;
           })
-          .map(r => ({
-            date:              r.date,
-            checkIn:           r.checkIn,
-            checkOut:          r.checkOut,
-            lateMinutes:       r.lateMinutes       || 0,
-            earlyLeaveMinutes: r.earlyLeaveMinutes  || 0,
-            absent:            r.absent             || false,
-            isHalfDay:         r.isHalfDay          || false,
-            shiftMinutes:      getShiftMinutesForDate(staffMember.employeeId, r.date)
-          }));
+          .map(r => {
+            const shift = getShiftForDate(staffMember.employeeId, r.date);
+            const rec   = reclassifyByScanMidpoint(r, shift);
+            return {
+              date:              rec.date,
+              checkIn:           rec.checkIn,
+              checkOut:          rec.checkOut,
+              lateMinutes:       rec.lateMinutes       || 0,
+              earlyLeaveMinutes: rec.earlyLeaveMinutes  || 0,
+              absent:            rec.absent             || false,
+              isHalfDay:         rec.isHalfDay          || false,
+              shiftMinutes:      getShiftMinutesForDate(staffMember.employeeId, rec.date)
+            };
+          });
 
         const existingRecord  = existingRecordMap[staffMember.employeeId];
         const existingBonuses = existingRecord?.salaryStructure?.bonuses || [];
@@ -2418,12 +2456,44 @@ router.post('/deductions/recalculate-attendance', async (req, res) => {
             continue;
           }
 
-          const attRecords = await Attendance.find({
-            tenantId: TENANT_ID,
-            employeeId: String(empNo),
+          // Fetch shifts for this employee to enable midpoint reclassification
+          const empShiftsRaw = await Shift.find({ employeeId: String(empNo), isActive: true }).lean();
+          const empPermShiftsR = empShiftsRaw.filter(s => s.shiftType === 'permanent');
+          const empTempShiftsR = empShiftsRaw.filter(s => s.shiftType === 'temporary');
+          const LAGOS_OFF = 60 * 60 * 1000;
+          const getEmpShiftForDate = (dateStr) => {
+            const dayNames = ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+            const dayName = dayNames[new Date(dateStr + 'T12:00:00Z').getDay()];
+            return empTempShiftsR.find(ts => ts.tempStartDate <= dateStr && ts.tempEndDate >= dateStr)
+              || empPermShiftsR.find(s => s.dayOfWeek === dayName)
+              || null;
+          };
+          const reclassifyR = (r) => {
+            if (r.checkIn || !r.checkOut) return r;
+            const shift = getEmpShiftForDate(r.date);
+            if (!shift?.resumptionTime || !shift?.closingTime) return r;
+            const base = new Date(r.date + 'T00:00:00Z');
+            const [rH, rM] = shift.resumptionTime.split(':').map(Number);
+            const [cH, cM] = shift.closingTime.split(':').map(Number);
+            const startUTC = new Date(base.getTime() + (rH*60+rM)*60000 - LAGOS_OFF);
+            const endUTC   = new Date(base.getTime() + (cH*60+cM)*60000 - LAGOS_OFF);
+            const midUTC   = new Date((startUTC.getTime() + endUTC.getTime()) / 2);
+            const scanTime = new Date(r.checkOut);
+            if (scanTime < midUTC) {
+              const lateMs = scanTime - startUTC;
+              return { ...r, checkIn: r.checkOut, checkOut: null,
+                lateMinutes: lateMs > 0 ? Math.round(lateMs / 60000) : 0,
+                earlyLeaveMinutes: 0, absent: false };
+            }
+            return r;
+          };
+
+          const attRecords = (await Attendance.find({
             date: { $gte: startDate, $lte: effectiveEndDate },
-            $or: [{ lateMinutes: { $gt: 0 } }, { absent: true }, { earlyLeaveMinutes: { $gt: 0 } }]
-          }).sort({ date: 1 }).lean();
+            employeeId: String(empNo),
+            $or: [{ lateMinutes: { $gt: 0 } }, { absent: true }, { earlyLeaveMinutes: { $gt: 0 } },
+                  { checkIn: null, checkOut: { $exists: true, $ne: null } }]
+          }).sort({ date: 1 }).lean()).map(reclassifyR);
 
           const baseSalary  = pr.salaryStructure?.baseSalary || 0;
           const grossSalary = pr.payrollSummary?.grossSalary || baseSalary;
