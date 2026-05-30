@@ -11,6 +11,7 @@ const Loan            = require('../models/Loan');
 const getTenantModel  = require('../utils/getTenantModel');
 const Staff           = getTenantModel('Staff');
 const Attendance      = getTenantModel('Attendance');
+const Holiday         = getTenantModel('Holiday');
 const LeaveRequest    = getTenantModel('LeaveRequest');
 const Shift           = getTenantModel('Shift');
 
@@ -618,6 +619,13 @@ router.post('/process/generate', async (req, res) => {
     }
     const attendanceRecords = Object.values(attendanceDedupeMap);
 
+    // Build a set of holiday date strings for this period so we never deduct
+    // for a day that has since been marked as a public holiday
+    const holidayDocs = Holiday
+      ? await Holiday.find({ date: { $gte: startDate, $lte: attEndDate } }).lean()
+      : [];
+    const holidayDates = new Set(holidayDocs.map(h => h.date));
+
     // Fetch active loans for this period
     const activeLoans = await Loan.find({ tenantId: TENANT_ID, status: 'active', startPeriod: { $lte: period } });
 
@@ -796,6 +804,7 @@ router.post('/process/generate', async (req, res) => {
             );
 
         const attendanceData = memberAttendance
+          .filter(r => !holidayDates.has(r.date))
           // Drop absence-only records that fall on non-shift days (auto-absences created
           // for global workdays when the employee isn't scheduled to work that day).
           .filter(r => {
@@ -2445,6 +2454,12 @@ router.post('/deductions/recalculate-attendance', async (req, res) => {
       })();
       const effectiveEndDate = endDate < yesterdayStr ? endDate : yesterdayStr;
 
+      // Build a set of holiday date strings for this period — same guard as generation
+      const holidayDocsRte = Holiday
+        ? await Holiday.find({ date: { $gte: startDate, $lte: endDate } }).lean()
+        : [];
+      const holidayDatesRte = new Set(holidayDocsRte.map(h => h.date));
+
       // ── PHASE 2: Recalculate per employee ──────────────────────────────────
       for (const pr of payrollRecords) {
         try {
@@ -2493,7 +2508,9 @@ router.post('/deductions/recalculate-attendance', async (req, res) => {
             employeeId: String(empNo),
             $or: [{ lateMinutes: { $gt: 0 } }, { absent: true }, { earlyLeaveMinutes: { $gt: 0 } },
                   { checkIn: null, checkOut: { $exists: true, $ne: null } }]
-          }).sort({ date: 1 }).lean()).map(reclassifyR);
+          }).sort({ date: 1 }).lean())
+            .filter(r => !holidayDatesRte.has(r.date))
+            .map(reclassifyR);
 
           const baseSalary  = pr.salaryStructure?.baseSalary || 0;
           const grossSalary = pr.payrollSummary?.grossSalary || baseSalary;
